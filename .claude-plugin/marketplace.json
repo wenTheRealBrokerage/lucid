@@ -1,6 +1,6 @@
 {
   "name": "lucid",
-  "description": "The lucid mod: explainer pages with narration for the questions Claude asks you",
+  "description": "The lucid mod: terminal explainers with narration for the questions Claude asks you",
   "owner": {
     "name": "Wen Gu"
   },

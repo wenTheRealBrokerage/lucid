@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { OFFER_LABEL, OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from '../hooks/page'
+import type { Section } from '../types'
 
 const question = (labels: string[], multiSelect = false) => ({
   question: 'Which lock should the ledger use?',
@@ -18,13 +19,10 @@ const PAGE = [
   '<script>document.title</script>',
 ].join('\n')
 
-const SECTIONS = JSON.stringify({
-  title: 'Ledger Lock Choice',
-  sections: [
-    { id: 'the-decision', heading: 'The decision', markdown: 'Text.' },
-    { id: 'the-options', heading: 'The options', markdown: 'Text.' },
-  ],
-})
+const SECTIONS: Section[] = [
+  { id: 'the-decision', heading: 'The decision', markdown: 'Text.' },
+  { id: 'the-options', heading: 'The options', markdown: 'Text.' },
+]
 
 describe('the offer in the question dialog', () => {
   test('a single-choice question with room gains the offer as its last option', async () => {
@@ -62,20 +60,12 @@ describe('the offer in the question dialog', () => {
   })
 })
 
-describe('checks on a built page', () => {
+describe('checks on the opt-in page', () => {
   test('a page that follows the contract passes, code samples and all', async () => {
-    const check = checkPage(PAGE, SECTIONS)
-    expect(check).toEqual({
-      isValid: true,
-      title: 'Ledger Lock Choice',
-      sections: [
-        { id: 'the-decision', heading: 'The decision', markdown: 'Text.' },
-        { id: 'the-options', heading: 'The options', markdown: 'Text.' },
-      ],
-    })
+    expect(checkPage(PAGE, SECTIONS)).toEqual({ isValid: true, title: 'Ledger Lock Choice' })
   })
 
-  const problemsOf = (html: string, sections = SECTIONS): string[] => {
+  const problemsOf = (html: string, sections: readonly Section[] = SECTIONS): string[] => {
     const check = checkPage(html, sections)
 
     return check.isValid ? [] : check.problems
@@ -103,13 +93,7 @@ describe('checks on a built page', () => {
     expect(problemsOf(PAGE.replace(':root[data-theme="dark"]{--bg:#111}', '').replace(':not([data-theme="light"])', ''))[0]).toContain('both themes')
   })
 
-  test('sections that do not match the page fail', async () => {
-    expect(problemsOf(PAGE, 'not json')).toEqual(['sections.json is not JSON'])
-    expect(problemsOf(PAGE, '{"sections":[]}')).toEqual(['sections.json lists no section with id, heading and markdown'])
-    expect(problemsOf(PAGE, SECTIONS.replace('the-options', 'The Options'))).toEqual([
-      'section id "The Options" is not kebab-case',
-      'the page has no element with data-lucid-section="The Options"',
-    ])
-    expect(problemsOf(PAGE, SECTIONS.replace('the-options', 'the-decision'))).toEqual(['section id "the-decision" is used twice'])
+  test('a section the page does not carry fails', async () => {
+    expect(problemsOf(PAGE, [...SECTIONS, { id: 'the-cost', heading: 'The cost', markdown: 'Text.' }])).toEqual(['the page has no element with data-lucid-section="the-cost"'])
   })
 })

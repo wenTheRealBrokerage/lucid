@@ -1,7 +1,9 @@
 import type { Section } from '../types'
 
-// What lucid says to models: the classifier's rules, the builder's brief and
-// the narration writer's brief, plus the texts a writer is tried on.
+import { DIAGRAM_MAX_WIDTH } from './explainer'
+
+// What lucid says to models: the classifier's rules, the two builders'
+// briefs and the narration writer's brief, plus the texts a writer is tried on.
 
 export const CLASSIFIER_SYSTEM = [
   'You rate how hard a question is to explain to the person who must answer it.',
@@ -16,29 +18,51 @@ export function classifierPrompt(question: string, context: string): string {
   return `<question>\n${question}\n</question>\n\n<context>\n${context}\n</context>`
 }
 
-export function builderBrief(input: { question: string; context: string; dir: string; problems?: readonly string[] }): string {
-  const retry =
-    input.problems === undefined || input.problems.length === 0
-      ? ''
-      : `\n\nAn earlier build of this page was rejected. Fix every one of these:\n${input.problems.map(problem => `- ${problem}`).join('\n')}`
+const retryBlock = (what: string, problems: readonly string[] | undefined): string =>
+  problems === undefined || problems.length === 0 ? '' : `\n\nAn earlier ${what} was rejected. Fix every one of these:\n${problems.map(problem => `- ${problem}`).join('\n')}`
 
-  return [
-    'Build one explainer page for the question below, so the person asked can answer it with confidence.',
-    '',
-    `Write exactly two files, both in ${input.dir}:`,
-    `1. ${input.dir}/page.html: the page.`,
-    `2. ${input.dir}/sections.json: {"title": "...", "sections": [{"id": "kebab-id", "heading": "...", "markdown": "..."}]}`,
-    '',
-    'Then reply with the single word DONE, or FAILED: and the reason. Do not publish the page; lucid adds narration and publishes it.',
-    '',
-    '<question>',
-    input.question,
-    '</question>',
-    '',
-    '<context>',
-    input.context,
-    '</context>',
-  ].join('\n') + retry
+/** The terminal builder's task: one explainer.json in the work folder. */
+export function builderBrief(input: { question: string; context: string; dir: string; problems?: readonly string[] }): string {
+  return (
+    [
+      'Build one explainer for the question below, so the person asked can answer it with confidence. It is read in a terminal pane.',
+      '',
+      `Write exactly one file: ${input.dir}/explainer.json`,
+      '{"title": "...", "sections": [{"id": "kebab-id", "heading": "...", "markdown": "...",',
+      `  "diagram": {"ascii": ["..."], "unicode": ["..."], "maxWidth": ${DIAGRAM_MAX_WIDTH}}, "steps": ["..."], "narrate": true, "takeaway": "..."}]}`,
+      'diagram, steps, narrate and takeaway are optional. Your system prompt has the rules.',
+      '',
+      'Then reply with the single word DONE, or FAILED: and the reason. Write no other file.',
+      '',
+      '<question>',
+      input.question,
+      '</question>',
+      '',
+      '<context>',
+      input.context,
+      '</context>',
+    ].join('\n') + retryBlock('build of this explainer', input.problems)
+  )
+}
+
+/** The opt-in page builder's task: one page.html from a finished explainer. */
+export function pageBrief(input: { title: string; sections: readonly Section[]; dir: string; problems?: readonly string[] }): string {
+  const document = { title: input.title, sections: input.sections.map(({ audio: _audio, ...section }) => section) }
+
+  return (
+    [
+      'Build one HTML page from the explainer below, so it reads as well in a browser as it does in the terminal.',
+      '',
+      `Write exactly one file: ${input.dir}/page.html. Your system prompt has the page contract.`,
+      'Wrap each section in an element with data-lucid-section="<id>", using the ids below, in this order.',
+      '',
+      'Then reply with the single word DONE, or FAILED: and the reason. Do not publish the page.',
+      '',
+      '<explainer>',
+      JSON.stringify(document, null, 2),
+      '</explainer>',
+    ].join('\n') + retryBlock('build of this page', input.problems)
+  )
 }
 
 export function narratorBrief(sections: readonly Section[]): string {

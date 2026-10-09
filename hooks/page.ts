@@ -1,10 +1,10 @@
 import type { AskedQuestion, Section } from '../types'
 
-// The question dialog's offer, and the checks a built page must pass before
-// it is narrated and published.
+// The question dialog's offer, and the checks the opt-in HTML page must pass
+// before lucid embeds narration in it.
 
 export const OFFER_LABEL = 'Explain this first'
-export const OFFER_DESCRIPTION = 'Build an explainer page for this question before you answer.'
+export const OFFER_DESCRIPTION = 'Build an explainer for this question, shown here in the terminal, before you answer.'
 /** The header lucid's own dialogs carry, so its hooks leave them alone. */
 export const OWN_HEADER = 'lucid'
 export const MAX_OPTIONS = 4
@@ -18,9 +18,7 @@ const SCRIPT_HOSTS = [
 ]
 const STYLE_HOSTS = ['https://fonts.googleapis.com/']
 
-export type PageCheck =
-  | { isValid: true; title: string; sections: Section[] }
-  | { isValid: false; problems: string[] }
+export type PageCheck = { isValid: true; title: string } | { isValid: false; problems: string[] }
 
 export const isOwnDialog = (questions: readonly { header?: string }[]): boolean =>
   questions.length > 0 && questions.every(question => question.header === OWN_HEADER)
@@ -72,10 +70,11 @@ const attributes = (html: string, tag: string, name: string): string[] =>
 const isPinned = (url: string): boolean => /[@/]\d+\.\d+(\.\d+)?([/.-]|$)/.test(url)
 
 /**
- * Checks a built page against the Artifact page contract and against its own
- * sections file. A page that fails goes back for one more build, a rung up.
+ * Checks a built page against the Artifact page contract and against the
+ * explainer it was built from. A page that fails goes back for one more
+ * build, a rung up.
  */
-export function checkPage(html: string, sectionsJson: string): PageCheck {
+export function checkPage(html: string, sections: readonly Section[]): PageCheck {
   const problems: string[] = []
 
   const title = /<title>([^<]*)<\/title>/i.exec(html.slice(0, 8192))?.[1]?.trim() ?? ''
@@ -105,31 +104,10 @@ export function checkPage(html: string, sectionsJson: string): PageCheck {
     if (/^https?:/i.test(src)) problems.push(`media from another host: ${src}`)
   }
 
-  let sections: Section[] = []
-  try {
-    const raw = JSON.parse(sectionsJson) as { sections?: unknown }
-    const rows = Array.isArray(raw.sections) ? raw.sections : []
-    sections = rows.flatMap(row => {
-      const one = row as Partial<Section>
-
-      return typeof one.id === 'string' && typeof one.heading === 'string' && typeof one.markdown === 'string'
-        ? [{ id: one.id, heading: one.heading, markdown: one.markdown }]
-        : []
-    })
-    if (sections.length === 0) problems.push('sections.json lists no section with id, heading and markdown')
-    if (sections.length !== rows.length) problems.push('sections.json has a section missing id, heading or markdown')
-  } catch {
-    problems.push('sections.json is not JSON')
-  }
-
   const marked = new Set(attributes(html, '[a-z0-9]+', 'data-lucid-section'))
-  const seen = new Set<string>()
   for (const section of sections) {
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(section.id)) problems.push(`section id "${section.id}" is not kebab-case`)
-    if (seen.has(section.id)) problems.push(`section id "${section.id}" is used twice`)
     if (!marked.has(section.id)) problems.push(`the page has no element with data-lucid-section="${section.id}"`)
-    seen.add(section.id)
   }
 
-  return problems.length > 0 ? { isValid: false, problems } : { isValid: true, title, sections }
+  return problems.length > 0 ? { isValid: false, problems } : { isValid: true, title }
 }

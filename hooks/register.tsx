@@ -3,10 +3,11 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Complexity, Effort, Job, Pending, Section, Usage, View } from '../types'
 
+import { checkExplainer, narratedSections, nextNarrated, pickDiagram, sectionText, widthOf } from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
-import { CLASSIFIER_SYSTEM, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief } from './prompts'
+import { CLASSIFIER_SYSTEM, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief } from './prompts'
 import {
   aliasRoster,
   applyPricing,
@@ -23,15 +24,19 @@ import {
 } from './roster'
 import type { Config, Roster, RosterModel } from './roster'
 import { escalate, parseComplexity, shiftStep, stepFor, tierAt } from './routing'
+import { probeTerminal } from './terminal'
+import type { Terminal } from './terminal'
 
-// lucid: when Claude asks a question, offer an explainer page for it. Nothing
-// is spent on the offer; a model is called only after the person accepts.
+// lucid: when Claude asks a question, offer an explainer for it, read in a
+// pane of the terminal. Nothing is spent on the offer; a model is called only
+// after the person accepts.
 
 const PANE = 'lucid'
 const MODELS_URL = 'https://api.anthropic.com/v1/models?limit=1000'
 const PRICING_URL = 'https://platform.claude.com/docs/en/about-claude/pricing.md'
-const PAGE_LIMIT_BYTES = 15 * 1024 * 1024
-const NOTICE = '"Explain this first" builds an explainer page'
+const NOTICE = '"Explain this first" builds an explainer in the terminal'
+/** How long each frame shows while auto-advance runs. */
+const FRAME_MS = 2500
 /** A rendered clip smaller than this per character of script holds no speech: `say` writes such files where it cannot reach the speech service. */
 const MIN_AUDIO_BYTES_PER_CHAR = 40
 const EMPTY_CLIP_BYTES = 40_000
@@ -41,7 +46,8 @@ const KEPT = 'lucid read its own subagent report, so it does not start a turn he
 
 const pending = atom({ plugin: 'lucid', key: 'pending' } as const, null)
 const job = atom({ plugin: 'lucid', key: 'job' } as const, null)
-const view = atom({ plugin: 'lucid', key: 'view' } as const, { index: 0, playing: null })
+const view = atom({ plugin: 'lucid', key: 'view' } as const, { index: 0, step: 0, isToc: false, isAuto: false, playing: null })
+const FRESH_VIEW: View = { index: 0, step: 0, isToc: false, isAuto: false, playing: null }
 
 type TtsEngine = 'say' | 'kokoro' | 'hosted'
 
@@ -55,13 +61,17 @@ type Settings = {
   narrationStep: number
   shouldOffer: boolean
   shouldConfirm: boolean
+  /** Open the HTML page in a browser as soon as `/explain page` has built it. */
   shouldAutoOpen: boolean
+  /** Arms `/explain publish`; nothing publishes by itself. */
   shouldPublish: boolean
+  /** Whether `g` may auto-advance a section's frames. */
+  shouldAnimate: boolean
 }
 
 type Finished = { answer: string; reason: string; durationMs: number; usage?: Usage }
 
-type AgentKind = 'explainer' | 'narration-writer'
+type AgentKind = 'explainer' | 'explainer-page' | 'narration-writer'
 
 type WithBrowser = { browser: { open: (input: { url: string }) => Promise<{ ok: boolean; error?: string }> } }
 
@@ -74,7 +84,8 @@ const DEFAULTS: Settings = {
   shouldOffer: true,
   shouldConfirm: true,
   shouldAutoOpen: true,
-  shouldPublish: true,
+  shouldPublish: false,
+  shouldAnimate: true,
 }
 
 /** `/explain set <name> on|off`: the switches a person may turn, by the word they type. */
@@ -83,14 +94,17 @@ const SWITCHES: Record<string, keyof Settings> = {
   confirm: 'shouldConfirm',
   open: 'shouldAutoOpen',
   publish: 'shouldPublish',
+  animate: 'shouldAnimate',
 }
 
 const AGENT_TOOLS: Record<AgentKind, string[]> = {
-  explainer: ['Artifact', 'Skill', 'Read', 'Write', 'Edit'],
+  explainer: ['Write'],
+  'explainer-page': ['Read', 'Write', 'Edit', 'Skill'],
   'narration-writer': [],
 }
 const AGENT_ROLE: Record<AgentKind, string> = {
-  explainer: 'Builds one explainer page for the lucid mod. Only lucid starts it.',
+  explainer: 'Builds one terminal explainer for the lucid mod. Only lucid starts it.',
+  'explainer-page': 'Builds the opt-in HTML page of a lucid explainer. Only lucid starts it.',
   'narration-writer': 'Writes narration scripts for the lucid mod. Only lucid starts it.',
 }
 
@@ -99,8 +113,10 @@ const waiting = new Map<string, (done: Finished) => void>()
 const finished = new Map<string, Finished>()
 const mine = new Set<string>()
 let playback: AbortController | null = null
+let autoTimer: { cancel: () => void } | null = null
 let cancelled = ''
 let config: Config | undefined
+let terminal: Terminal | undefined
 
 const words = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
@@ -124,7 +140,7 @@ async function loadConfig($: EngineInterface): Promise<Config> {
 }
 
 async function loadSettings($: EngineInterface): Promise<Settings> {
-  const stored = await $.store.get('settings')
+  const stored = await $.store.get('settings').catch(() => undefined)
 
   return { ...DEFAULTS, ...(typeof stored === 'object' && stored !== null ? (stored as Partial<Settings>) : {}) }
 }
@@ -305,9 +321,62 @@ async function runAgent(
   return { answer: '', reason: 'not-started', durationMs: 0, model: input.model.id }
 }
 
-async function openPane($: EngineInterface): Promise<void> {
-  const opened = await $.ui.open({ id: PANE, title: 'Explainer' }).catch(() => undefined)
-  if (opened !== undefined && !opened.isPlaced) $.ui.toast('run /explain view to see the explainer pane')
+/** The terminal probe, read once per load from literal names (D:3588-3609); unknown where the environment cannot be read. */
+async function probe($: EngineInterface): Promise<Terminal> {
+  if (terminal === undefined) {
+    const get = (name: Promise<string | undefined>) => name.catch(() => undefined)
+    terminal = probeTerminal({
+      TERMINAL_EMULATOR: await get($.env.get('TERMINAL_EMULATOR')),
+      TERM_PROGRAM: await get($.env.get('TERM_PROGRAM')),
+      TERM: await get($.env.get('TERM')),
+      COLORTERM: await get($.env.get('COLORTERM')),
+      TMUX: await get($.env.get('TMUX')),
+      WT_SESSION: await get($.env.get('WT_SESSION')),
+    })
+  }
+
+  return terminal
+}
+
+/**
+ * Opens the pane. From an asked context (a command, a press) it seats at any
+ * width; `focus` is asked for only while no dialog holds the keys (D:7406).
+ */
+async function openPane($: EngineInterface, isFocus: boolean): Promise<boolean> {
+  const opened = await $.ui.open(isFocus ? { id: PANE, title: 'Explainer', focus: true } : { id: PANE, title: 'Explainer' }).catch(() => undefined)
+  if (opened !== undefined && !opened.isPlaced) $.ui.toast('the explainer pane needs a wider terminal; /explain view prints the section here instead')
+
+  return opened?.isPlaced === true
+}
+
+function stopAuto(): void {
+  autoTimer?.cancel()
+  autoTimer = null
+}
+
+/** One tick of auto-advance: the next frame, or the end of it at the last frame. */
+async function tickAuto($: EngineInterface): Promise<void> {
+  const current = await read($, job)
+  const seen = await read($, view)
+  const steps = current?.sections[seen.index]?.steps ?? []
+  const isOn = seen.isAuto && (await loadSettings($)).shouldAnimate && seen.step < steps.length - 1
+
+  if (!isOn) {
+    stopAuto()
+    if (seen.isAuto) await update($, view, shown => ({ ...shown, isAuto: false }))
+
+    return
+  }
+
+  await update($, view, shown => ({ ...shown, step: shown.step + 1 }))
+}
+
+/** Arms the frame timer; the `view` atom carries `isAuto`, so a reload re-arms it from session.start. */
+function startAuto($: EngineInterface): void {
+  stopAuto()
+  autoTimer = $.clock.every(FRAME_MS, () => {
+    void tickAuto($)
+  })
 }
 
 /** Opens the page: in the terminal where a browser mod is loaded, else in Chrome, else the default browser. */
@@ -347,17 +416,28 @@ async function playSection($: EngineInterface, id: string): Promise<void> {
   const stop = new AbortController()
   playback = stop
   await update($, view, seen => ({ ...seen, playing: id }))
+  let isEnded = false
 
   try {
     const { base64 } = await $.fs.read(section.audio, { as: 'bytes' })
     await $.audio.play({ base64, mime: mimeOf(section.audio) }, { signal: stop.signal })
+    isEnded = true
   } catch (err) {
     $.ui.toast(`could not play the narration (${words(err)})`)
   }
 
+  // Not aborted by Stop or by another Play: the clip ran out, so the next narrated section follows.
   if (playback === stop) {
     playback = null
     await update($, view, seen => ({ ...seen, playing: null }))
+    const current = isEnded ? await read($, job) : null
+    const at = current?.sections.findIndex(one => one.id === id) ?? -1
+    const following = current === null || at < 0 ? undefined : nextNarrated(current.sections, at)
+    const next = following === undefined ? undefined : current?.sections[following]
+    if (following !== undefined && next !== undefined) {
+      await update($, view, seen => ({ ...seen, index: following, step: 0, isToc: false }))
+      await playSection($, next.id)
+    }
   }
 }
 
@@ -496,77 +576,153 @@ async function writeNarration(
 }
 
 /**
- * Renders the scripts to speech, writes the one-file page and publishes it.
- * The last steps of a build, and the whole of `/explain revoice`.
+ * Renders the scripts to speech and finishes the job. The last step of a
+ * build, and the whole of `/explain revoice`.
  */
-async function voiceAndPublish(
+async function voice(
   $: EngineInterface,
-  input: {
-    id: string
-    dir: string
-    question: string
-    pageBytes: number
-    sections: readonly Section[]
-    scripts: readonly Narrated[]
-    settings: Settings
-    caveat: string
-    shouldOpen: boolean
-  },
+  input: { id: string; dir: string; sections: readonly Section[]; scripts: readonly Narrated[]; settings: Settings; caveat: string },
 ): Promise<void> {
   const { id, dir, settings } = input
   const narrated = input.scripts.filter(one => one.narrate)
-  let sections: Section[] = input.sections.map(({ id: section, heading, markdown }) => ({ id: section, heading, markdown }))
-  const clips: string[] = []
-  let room = PAGE_LIMIT_BYTES - input.pageBytes
+  let sections: Section[] = input.sections.map(({ audio: _audio, ...section }) => ({ ...section }))
+  let clips = 0
 
   if (narrated.length > 0) await patchJob($, id, { stage: 'voicing', note: `rendering speech for ${narrated.length} sections with ${settings.tts}` })
 
   for (const script of narrated) {
     const audio = await renderSpeech($, settings, dir, script)
-    const size = audio === undefined ? 0 : Math.ceil(((await $.fs.stat(audio).catch(() => undefined))?.size ?? 0) * 1.34)
-    if (audio === undefined || size === 0 || size > room) continue
-    room -= size
-    clips.push(script.id, mimeOf(audio), audio)
+    if (audio === undefined) continue
+    clips += 1
     sections = sections.map(section => (section.id === script.id ? { ...section, audio } : section))
   }
 
-  // One self-contained file: the page, its audio as data URIs, the player.
-  const final = `${dir}/explainer.html`
-  const embedded = await $.process
-    .run(['/bin/sh', `${$.plugin.root}/scripts/embed.sh`, final, `${dir}/page.html`, `${$.plugin.root}/assets/player.html`, ...clips], { timeoutMs: 120_000 })
-    .catch(() => undefined)
-  const file = embedded?.exitCode === 0 ? final : `${dir}/page.html`
-  await patchJob($, id, { stage: 'publishing', sections, file, note: 'publishing privately' })
-
   const voiced =
-    clips.length > 0
-      ? `${clips.length / 3} narrated sections`
+    clips > 0
+      ? `${clips} narrated sections`
       : narrated.length > 0
         ? `the ${settings.tts} speech engine produced no audio here (the macOS system voice cannot speak in some tmux and SSH sessions)`
         : 'no section was long enough to narrate'
-  let note = input.caveat === '' ? voiced : `${voiced}; ${input.caveat}`
+  const note = input.caveat === '' ? voiced : `${voiced}; ${input.caveat}`
 
-  // Publish where the session has the Artifact tool; without it the pane and the local file stand.
-  let url: string | undefined
-  const hasArtifact = (await $.tool.list().catch(() => [])).some(tool => tool.name === 'Artifact')
+  await patchJob($, id, { stage: 'done', sections, note, finishedAt: await $.clock.now() })
+  await keepJob($, id)
+  $.ui.toast('explainer ready: ctrl+x tab reads it in the pane; /explain view brings it back', { timeoutMs: 10_000 })
+}
 
-  if (!settings.shouldPublish) {
-    note = `${note}; publishing is off, so the page stays on this machine`
-  } else if (hasArtifact) {
-    const published = await $.tool
-      .call({ tool: 'Artifact', action: 'publish', file_path: file, icon: 'book', description: `Explainer for: ${input.question.slice(0, 120)}` })
-      .catch((err: unknown) => ({ deny: words(err) }))
-    const result = 'result' in published ? (published.result as { url?: unknown } | undefined) : undefined
-    if (typeof result?.url === 'string') url = result.url
-    else note = `${note}; not published (${'deny' in published && published.deny ? published.deny : 'the Artifact tool gave no link'})`
-  } else {
-    note = `${note}; this session has no Artifact tool, so the page stays local`
+/**
+ * `/explain page`: the opt-in HTML page, built by a second subagent from the
+ * finished explainer, with the narration embedded. Nothing is uploaded.
+ */
+async function buildPage($: EngineInterface): Promise<void> {
+  const current = await recallJob($)
+  if (current === null || current.stage !== 'done') return
+  const { id, dir } = current
+  const title = current.title ?? 'Explainer'
+  const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}-page`
+
+  try {
+    const table = await loadConfig($)
+    const settings = await loadSettings($)
+    const roles = { ...table.roles, ...settings.roles }
+    const { roster } = await refreshRoster($, false)
+    const fallback = await loadFallback($, table)
+    let step = current.step ?? stepFor(current.complexity ?? 'moderate', table)
+    let html: string | undefined
+    let problems: string[] = []
+
+    for (let attempt = 0; attempt < 2 && html === undefined; attempt += 1) {
+      const pick = resolveTier(tierAt(step, table), roster, roles, table)
+      if (!pick.isResolved) throw new Error(pick.error)
+      await patchJob($, id, { stage: 'paging', note: attempt === 0 ? 'a builder is writing the page' : 'the first page failed its checks; rebuilding one step up' })
+
+      const built = await runAgent($, {
+        kind: 'explainer-page',
+        model: pick.model,
+        effort: pick.effort,
+        fallbackId: newestOf(fallback.models, pick.model.family)?.id,
+        prompt: pageBrief({ title, sections: current.sections, dir: work, problems }),
+        description: 'Build explainer page',
+        timeoutMs: 20 * 60_000,
+      })
+
+      const written = await $.fs.read(`${work}/page.html`).catch(() => undefined)
+      if (written === undefined) {
+        problems = [`the builder ended with "${built.reason}" and did not write page.html`]
+      } else {
+        const check = checkPage(written, current.sections)
+        if (check.isValid) html = written
+        else problems = check.problems
+      }
+
+      if (html === undefined) {
+        const up = escalate(step, table)
+        if (up === undefined) break
+        step = up
+      }
+    }
+
+    if (html === undefined) throw new Error(`the page failed its checks: ${problems.slice(0, 3).join('; ')}`)
+
+    await $.fs.write(`${dir}/page.html`, html)
+    // One self-contained file: the page, its audio as data URIs, the player.
+    const clips = current.sections.flatMap(section => (section.audio === undefined ? [] : [section.id, mimeOf(section.audio), section.audio]))
+    const final = `${dir}/explainer.html`
+    const embedded = await $.process
+      .run(['/bin/sh', `${$.plugin.root}/scripts/embed.sh`, final, `${dir}/page.html`, `${$.plugin.root}/assets/player.html`, ...clips], { timeoutMs: 120_000 })
+      .catch(() => undefined)
+    const file = embedded?.exitCode === 0 ? final : `${dir}/page.html`
+
+    await patchJob($, id, { stage: 'done', file, note: `page written: ${file}` })
+    await keepJob($, id)
+    $.ui.toast('page ready: /explain open opens it; /explain publish uploads it', { timeoutMs: 8000 })
+    if (settings.shouldAutoOpen) $.ui.log(await openPage($))
+  } catch (err) {
+    await patchJob($, id, { stage: 'done', note: `page not built: ${words(err)}` })
+    $.ui.toast(`no page. ${words(err)}`, { timeoutMs: 10_000 })
+  }
+}
+
+/** Why `/explain publish` cannot run now, or undefined when it can. */
+async function publishBlocker($: EngineInterface): Promise<string | undefined> {
+  const current = await recallJob($)
+  if (current === null || current.file === undefined) return 'there is no page to publish; /explain page builds one'
+  if (!(await loadSettings($)).shouldPublish) return 'publishing is off; /explain set publish on arms this command'
+  if (!(await $.tool.list().catch(() => [])).some(tool => tool.name === 'Artifact')) return 'this session has no Artifact tool, so the page stays local'
+
+  return undefined
+}
+
+/**
+ * `/explain publish`: uploads the page as a private artifact, after one
+ * confirmation. The only place lucid calls the Artifact tool.
+ */
+async function publishPage($: EngineInterface): Promise<void> {
+  const current = await recallJob($)
+  if (current === null || current.file === undefined) return
+
+  const answer = await $.ui
+    .ask('Publishing uploads the page, written from your session text, to claude.ai as a private artifact that only you can delete. Publish it?', {
+      header: OWN_HEADER,
+      options: ['Publish', 'Keep it local'],
+    })
+    .catch(() => 'Keep it local')
+  if (answer !== 'Publish') {
+    $.ui.log('not published; the page stays on this machine')
+
+    return
   }
 
-  await patchJob($, id, { stage: 'done', note, finishedAt: await $.clock.now(), url: url ?? '' })
-  await keepJob($, id)
-  $.ui.toast('explainer ready: /explain view shows it here, /explain open opens the page', { timeoutMs: 10_000 })
-  if (input.shouldOpen) $.ui.log(await openPage($))
+  await patchJob($, current.id, { stage: 'publishing', note: 'publishing privately' })
+  const published = await $.tool
+    .call({ tool: 'Artifact', action: 'publish', file_path: current.file, icon: 'book', description: `Explainer for: ${current.question.slice(0, 120)}` })
+    .catch((err: unknown) => ({ deny: words(err) }))
+  const result = 'result' in published ? (published.result as { url?: unknown } | undefined) : undefined
+  const url = typeof result?.url === 'string' ? result.url : undefined
+
+  await patchJob($, current.id, { stage: 'done', note: url === undefined ? 'not published' : 'published privately', ...(url === undefined ? {} : { url }) })
+  await keepJob($, current.id)
+  $.ui.log(url === undefined ? `not published (${'deny' in published && published.deny ? published.deny : 'the Artifact tool gave no link'})` : `published privately: ${url}`)
 }
 
 /** `/explain revoice`: the last explainer's narration again, with the speech engine now chosen. */
@@ -586,21 +742,12 @@ async function revoice($: EngineInterface): Promise<void> {
     return
   }
 
-  const page = await $.fs.read(`${current.dir}/page.html`)
-  await voiceAndPublish($, {
-    scripts,
-    id: current.id,
-    dir: current.dir,
-    question: current.question,
-    pageBytes: page.length,
-    sections: current.sections,
-    settings: await loadSettings($),
-    caveat: '',
-    shouldOpen: false,
-  }).catch((err: unknown) => patchJob($, current.id, { stage: 'failed', note: words(err), error: words(err) }))
+  await voice($, { scripts, id: current.id, dir: current.dir, sections: current.sections, settings: await loadSettings($), caveat: '' }).catch((err: unknown) =>
+    patchJob($, current.id, { stage: 'failed', note: words(err), error: words(err) }),
+  )
 }
 
-/** The whole job, start to finish. Runs off any hook's dispatch: started from a timer. */
+/** The whole job, start to finish. Runs off any hook's dispatch: started from a timer, the pane already open. */
 async function runJob($: EngineInterface, origin: Job['origin'], question: string, isDialogOpen: boolean): Promise<void> {
   const now = await $.clock.now()
   const id = `j${now.toString(36)}`
@@ -609,8 +756,7 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
 
   const fresh: Job = { id, origin, question, dir, stage: 'classifying', note: 'rating the question', startedAt: now, sections: [] }
   await update($, job, () => fresh)
-  await update($, view, () => ({ index: 0, playing: null }))
-  await openPane($)
+  await update($, view, () => FRESH_VIEW)
 
   const fail = async (error: string) => {
     await patchJob($, id, { stage: 'failed', error, note: error, finishedAt: await $.clock.now() })
@@ -672,12 +818,12 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
       }
     }
 
-    // 3. Build, and once more a rung up if the page fails its checks.
-    let page: { title: string; sections: Section[]; html: string } | undefined
+    // 3. Build, and once more a rung up if the document fails its checks.
+    let document: { title: string; sections: Section[] } | undefined
     let problems: string[] = []
     let builderUsage: Usage | undefined
 
-    for (let attempt = 0; attempt < 2 && page === undefined; attempt += 1) {
+    for (let attempt = 0; attempt < 2 && document === undefined; attempt += 1) {
       if (cancelled === id) return
       const pick = resolveTier(tierAt(step, table), roster, roles, table)
       if (!pick.isResolved) return await fail(pick.error)
@@ -686,7 +832,7 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
         step,
         model: pick.model.id,
         effort: pick.effort,
-        note: attempt === 0 ? 'the builder is writing the page' : 'the first page failed its checks; rebuilding one step up',
+        note: attempt === 0 ? 'the builder is writing the explainer' : 'the first explainer failed its checks; rebuilding one step up',
       })
 
       const built = await runAgent($, {
@@ -695,39 +841,37 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
         effort: pick.effort,
         fallbackId: newestOf(fallback.models, pick.model.family)?.id,
         prompt: builderBrief({ question, context, dir: work, problems }),
-        description: 'Build explainer page',
+        description: 'Build explainer',
         timeoutMs: 20 * 60_000,
       })
       builderUsage = built.usage ?? builderUsage
       await patchJob($, id, { model: built.model, ...(builderUsage ? { builderUsage } : {}) })
 
-      const html = await $.fs.read(`${work}/page.html`).catch(() => undefined)
-      const listed = await $.fs.read(`${work}/sections.json`).catch(() => undefined)
+      const written = await $.fs.read(`${work}/explainer.json`).catch(() => undefined)
 
-      if (html === undefined || listed === undefined) {
-        problems = [`the builder ended with "${built.reason}" and did not write page.html and sections.json`]
+      if (written === undefined) {
+        problems = [`the builder ended with "${built.reason}" and did not write explainer.json`]
       } else {
-        const check = checkPage(html, listed)
-        if (check.isValid) page = { title: check.title, sections: check.sections, html }
+        const check = checkExplainer(written)
+        if (check.isValid) document = { title: check.title, sections: check.sections }
         else problems = check.problems
       }
 
-      if (page === undefined) {
+      if (document === undefined) {
         const up = escalate(step, table)
         if (up === undefined) break
         step = up
       }
     }
 
-    if (page === undefined) return await fail(`the page failed its checks: ${problems.slice(0, 3).join('; ')}`)
+    if (document === undefined) return await fail(`the explainer failed its checks: ${problems.slice(0, 3).join('; ')}`)
     if (cancelled === id) return
 
-    await $.fs.write(`${dir}/page.html`, page.html)
-    await $.fs.write(`${dir}/sections.json`, JSON.stringify({ title: page.title, sections: page.sections }, null, 2))
-    await patchJob($, id, { stage: 'narrating', title: page.title, sections: page.sections, file: `${dir}/page.html`, note: 'writing narration for the long sections' })
+    await $.fs.write(`${dir}/explainer.json`, JSON.stringify(document, null, 2))
+    await patchJob($, id, { stage: 'narrating', title: document.title, sections: document.sections, note: 'writing narration for the long sections' })
 
-    // 4. Narration scripts for the long sections; speech is rendered from them on this machine.
-    const long = longSections(page.sections, table.narrationMinChars)
+    // 4. Narration scripts for the long sections (each section's `narrate` overrides); speech is rendered from them here.
+    const long = narratedSections(document.sections, longSections(document.sections, table.narrationMinChars))
     let scripts: Narrated[] = []
     let caveat = ''
 
@@ -740,7 +884,7 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
       if (cancelled === id) return
     }
 
-    await voiceAndPublish($, { id, dir, question, scripts, settings, caveat, pageBytes: page.html.length, sections: page.sections, shouldOpen: settings.shouldAutoOpen })
+    await voice($, { id, dir, scripts, settings, caveat, sections: document.sections })
   } catch (err) {
     await fail(words(err))
   }
@@ -752,6 +896,9 @@ async function startJob($: EngineInterface, origin: Job['origin'], question: str
   if (isLive(await read($, job))) return 'an explainer is already being built; /explain status shows where it is'
   if (question.trim() === '') return 'there is no question to explain yet. Run /explain after Claude asks one, or /explain about <text>.'
 
+  // Opened here, inside the command or the press that asked, so it seats at any width; the build itself runs off this dispatch.
+  stopAuto()
+  await openPane($, !isDialogOpen)
   $.clock.after(1, () => {
     void runJob($, origin, question, isDialogOpen)
   })
@@ -893,14 +1040,17 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'explain',
-      description: 'Build an explainer page for the last question Claude asked',
-      argumentHint: '[view | open | stop | status | cancel | revoice | tts | set | about <text>]',
+      description: 'Build an explainer for the last question Claude asked, read in a pane of the terminal',
+      argumentHint: '[view | status | stop | cancel | revoice | page | open | publish | tts | set | about <text>]',
     })
     await $.command.register({
       name: 'explain-models',
       description: 'Refresh the model roster lucid picks from and re-check its narration writer',
       argumentHint: '[use <role> <family>]',
     })
+
+    // A reload drops the frame timer; the view atom still says whether it ran.
+    if ((await read($, view)).isAuto) startAuto($)
 
     if (e.isInteractive) {
       // The roster is refreshed off the start path, and at most once a day.
@@ -1001,16 +1151,38 @@ export const register: Register = on => {
 
   on('command.run', { command: 'explain' }, async ($, e) => {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
-    const isAboutLast = ['view', 'open', 'status', 'revoice'].includes(verb)
+    const isAboutLast = ['view', 'open', 'status', 'revoice', 'page', 'publish'].includes(verb)
     const current = isAboutLast ? await recallJob($) : await read($, job)
 
     if (verb === 'view') {
-      await $.ui.open({ id: PANE, title: 'Explainer' })
+      // A command is an asked open, so the pane seats at any width; where it still cannot, the section prints here.
+      const isPlaced = await openPane($, true)
+      if (isPlaced || current === null || current.sections.length === 0) return { text: describeJob(current) }
+      const seen = await read($, view)
 
-      return { text: describeJob(current) }
+      return { text: sectionText(current.title ?? 'Explainer', current.sections, seen.index, (await probe($)).unicodeSafe) }
     }
 
     if (verb === 'open') return { text: `${await openPage($)}` }
+
+    if (verb === 'page') {
+      if (current === null || current.stage !== 'done' || current.sections.length === 0) return { text: 'there is no finished explainer to build a page from' }
+      $.clock.after(1, () => {
+        void buildPage($)
+      })
+
+      return { text: 'a second subagent is writing the HTML page; a line follows when it is ready. Nothing is uploaded.' }
+    }
+
+    if (verb === 'publish') {
+      const blocker = await publishBlocker($)
+      if (blocker !== undefined) return { text: blocker }
+      $.clock.after(1, () => {
+        void publishPage($)
+      })
+
+      return { text: 'asking before anything is uploaded' }
+    }
     if (verb === 'status') return { text: describeJob(current) }
     if (verb === 'tts') return { text: await ttsCommand($, rest) }
 
@@ -1083,54 +1255,211 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Link, Markdown, Text } = $.ui.resolve(e)
+    // Code is on every table (D:3802-3869); the card it sits in is a terminal design, so elsewhere the diagram is a fence.
+    const Code = e.surface === 'terminal' ? $.ui.resolve(e).Code : undefined
     const current = await read($, job)
     const seen: View = await read($, view)
+    const settings = await loadSettings($)
+    const { unicodeSafe } = await probe($)
+    const width = e.props.bodyColumns
+    const rule = '─'.repeat(Math.max(1, width))
+
+    const pill = (text: string) => (
+      <Text>
+        <Text color="claude">▐</Text>
+        <Text backgroundColor="claude" color="inverseText" bold>
+          {text}
+        </Text>
+        <Text color="claude">▌</Text>
+      </Text>
+    )
+    const hint = !e.props.isFocused && (
+      <Box paddingX={1}>
+        <Text dimColor italic>
+          ctrl+x tab to take the keys
+        </Text>
+      </Box>
+    )
 
     if (current === null) {
       return (
         <Box flexDirection="column">
-          <Text>No explainer in this session yet.</Text>
-          <Text dimColor>When Claude asks a question, pick "Explain this first", or run /explain afterwards.</Text>
-          <Text dimColor>/explain view brings back the last one you built.</Text>
+          <Box>
+            {pill('lucid')}
+            <Text dimColor> explainer</Text>
+          </Box>
+          <Text dimColor>{rule}</Text>
+          <Box flexDirection="column" paddingX={1} paddingY={1}>
+            <Text>No explainer in this session yet.</Text>
+            <Text dimColor>When Claude asks a question, pick "Explain this first", or run /explain afterwards.</Text>
+            <Text dimColor>/explain view brings back the last one you built.</Text>
+          </Box>
         </Box>
       )
     }
 
-    const choice = current.model === undefined ? '' : `${current.model} at ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`
+    const title = current.title ?? 'Explainer'
     const count = current.sections.length
     const index = Math.min(seen.index, Math.max(count - 1, 0))
     const section = current.sections[index]
+    const steps = section?.steps ?? []
+    const step = Math.min(seen.step, Math.max(steps.length - 1, 0))
     const isPlaying = section !== undefined && seen.playing === section.id
-    const step = (by: number) => () => update($, view, shown => ({ ...shown, index: Math.min(Math.max(index + by, 0), Math.max(count - 1, 0)) }))
+    const isSettled = current.stage === 'done' || current.stage === 'failed' || current.stage === 'cancelled'
+    const clamp = (at: number) => Math.min(Math.max(at, 0), Math.max(count - 1, 0))
+    const goSection = (to: number) => update($, view, shown => ({ ...shown, index: clamp(to), step: 0, isToc: false }))
+    const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(step + by, 0), Math.max(steps.length - 1, 0)) }))
+
+    // Progress in eighths: the sections read so far, in the accent, over a dim floor.
+    const barWidth = Math.min(16, Math.max(6, Math.floor(width / 4)))
+    const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+    const ratio = count === 0 ? 0 : (index + 1) / count
+    const full = Math.floor(ratio * barWidth)
+    const part = Math.floor((ratio * barWidth - full) * 8)
+    const bar = '█'.repeat(full) + (EIGHTHS[part] ?? '')
+    const floor = '▁'.repeat(Math.max(0, barWidth - full - (part > 0 ? 1 : 0)))
+
+    const header = (
+      <Box flexDirection="column">
+        <Box justifyContent="space-between">
+          <Box>
+            {pill(title)}
+            <Text dimColor> explainer</Text>
+          </Box>
+          {count > 0 && (
+            <Text>
+              <Text color="claude">{bar}</Text>
+              <Text dimColor>
+                {floor} {index + 1}/{count}
+              </Text>
+            </Text>
+          )}
+        </Box>
+        <Text dimColor>{rule}</Text>
+        {(!isSettled || current.stage === 'failed' || current.stage === 'cancelled') && (
+          <Box paddingX={1}>
+            <Text dimColor>
+              {current.stage}: {current.note}
+              {current.model === undefined ? '' : ` · ${current.model} at ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`}
+            </Text>
+          </Box>
+        )}
+      </Box>
+    )
+
+    const diagram =
+      section?.diagram === undefined
+        ? undefined
+        : (() => {
+            const picked = pickDiagram(section.diagram, { unicodeSafe, columns: Math.max(1, width - 4) })
+            const drawn = picked.lines.join('\n')
+            const cut = picked.isCut && <Text dimColor>diagram is {widthOf(picked.lines)} columns wide; ctrl+x then ← widens the pane</Text>
+
+            return Code === undefined ? (
+              <Box flexDirection="column" marginTop={1}>
+                <Markdown text={'```text\n' + drawn + '\n```'} />
+                {cut}
+              </Box>
+            ) : (
+              <Box flexDirection="column" marginTop={1}>
+                <Box borderStyle="round" borderDimColor paddingX={1}>
+                  <Code source={drawn} language="text" wrap="truncate-end" />
+                </Box>
+                {cut}
+              </Box>
+            )
+          })()
+
+    const body = seen.isToc ? (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <Text dimColor>CONTENTS</Text>
+        {current.sections.map((one, at) => (
+          <Box key={`toc-${at}`} columnGap={1}>
+            <Text color={at === index ? 'claude' : undefined} dimColor={at !== index}>
+              {at === index ? '●' : '○'}
+            </Text>
+            {at < 9 ? (
+              <Button key={`toc-go-${at}`} label={one.heading} hotkey={String(at + 1)} plain dimColor={at !== index} onPress={() => goSection(at)} />
+            ) : (
+              <Button key={`toc-go-${at}`} label={one.heading} plain dimColor={at !== index} onPress={() => goSection(at)} />
+            )}
+          </Box>
+        ))}
+      </Box>
+    ) : section === undefined ? (
+      <Box paddingX={1} paddingY={1}>
+        <Text dimColor>{isSettled ? 'this explainer has no sections' : 'the sections appear here as soon as the builder is done'}</Text>
+      </Box>
+    ) : (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <Text dimColor>SECTION {index + 1}</Text>
+        <Text bold>{section.heading}</Text>
+        <Box marginTop={1}>
+          <Markdown text={section.markdown} />
+        </Box>
+        {diagram}
+        {steps.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text dimColor>
+              STEPS {step + 1}/{steps.length}
+              {seen.isAuto ? ' · auto' : ''}
+            </Text>
+            {steps.slice(0, step + 1).map((line, at) => (
+              <Box key={`step-${at}`}>
+                <Text>
+                  {at === step ? <Text color="claude">▶ </Text> : <Text dimColor>· </Text>}
+                  {line}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {section.takeaway !== undefined && (
+          <Box marginTop={1} borderStyle="quote" borderColor="claude" paddingX={1}>
+            <Text>
+              <Text color="claude" bold>
+                Takeaway{'  '}
+              </Text>
+              {section.takeaway}
+            </Text>
+          </Box>
+        )}
+      </Box>
+    )
 
     return (
       <Box flexDirection="column">
-        <Text bold>{current.title ?? 'Explainer'}</Text>
-        <Text dimColor>
-          {current.stage}: {current.note}
-        </Text>
-        {choice !== '' && <Text dimColor>{choice}</Text>}
-        {current.builderUsage !== undefined && (
-          <Text dimColor>
-            measured tokens: builder {tokens(current.builderUsage)}; narration {tokens(current.narratorUsage)}
-          </Text>
-        )}
-        {section !== undefined && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold>
-              {index + 1}/{count} {section.heading}
-            </Text>
-            <Markdown text={section.markdown} />
-          </Box>
-        )}
-        <Box marginTop={1} columnGap={1} flexWrap="wrap">
-          {count > 1 && <Button key="prev" label="Prev" hotkey="p" onPress={step(-1)} />}
-          {count > 1 && <Button key="next" label="Next" hotkey="n" onPress={step(1)} />}
+        {header}
+        {body}
+        <Text dimColor>{rule}</Text>
+        <Box columnGap={3} paddingX={1} flexWrap="wrap">
+          {count > 1 && <Button key="prev" label="prev" hotkey="p" plain dimColor onPress={() => goSection(index - 1)} />}
+          {count > 1 && <Button key="next" label="next" hotkey="n" plain onPress={() => goSection(index + 1)} />}
+          {steps.length > 1 && <Button key="frame-back" label="rewind" hotkey="b" plain dimColor onPress={() => goStep(-1)} />}
+          {steps.length > 1 && <Button key="frame" label="step" hotkey="f" plain onPress={() => goStep(1)} />}
+          {steps.length > 1 && settings.shouldAnimate && (
+            <Button
+              key="auto"
+              label={seen.isAuto ? 'pause' : 'auto'}
+              hotkey="g"
+              plain
+              dimColor
+              onPress={async () => {
+                const isOn = !seen.isAuto
+                await update($, view, shown => ({ ...shown, isAuto: isOn, step: isOn && step >= steps.length - 1 ? 0 : shown.step }))
+                if (isOn) startAuto($)
+                else stopAuto()
+              }}
+            />
+          )}
+          {count > 0 && <Button key="toc" label={seen.isToc ? 'close' : 'contents'} hotkey="t" plain dimColor onPress={() => update($, view, shown => ({ ...shown, isToc: !shown.isToc }))} />}
           {section?.audio !== undefined && !isPlaying && (
             <Button
               key="play"
-              label="Play"
+              label="play"
               hotkey="l"
+              plain
+              dimColor
               onPress={() => {
                 void playSection($, section.id)
               }}
@@ -1139,8 +1468,9 @@ export const register: Register = on => {
           {seen.playing !== null && (
             <Button
               key="stop"
-              label="Stop"
+              label="stop"
               hotkey="s"
+              plain
               onPress={async () => {
                 stopPlayback()
                 await update($, view, shown => ({ ...shown, playing: null }))
@@ -1150,9 +1480,10 @@ export const register: Register = on => {
           {(current.file !== undefined || Boolean(current.url)) && (
             <Button
               key="open"
-              label="Open page"
+              label="page"
               hotkey="o"
-              variant="primary"
+              plain
+              dimColor
               onPress={async () => {
                 $.ui.toast(`${await openPage($)}`, { timeoutMs: 6000 })
               }}
@@ -1161,15 +1492,22 @@ export const register: Register = on => {
           {current.origin === 'option' && current.stage === 'done' && (
             <Button
               key="again"
-              label="Ask me again"
+              label="ask me again"
               hotkey="a"
+              plain
+              dimColor
               onPress={() => {
                 void $.prompt.submit({ text: 'I have read the explainer. Ask me that question again.' })
               }}
             />
           )}
         </Box>
-        {current.url !== undefined && current.url !== '' && <Link href={current.url} label={current.url} />}
+        {hint}
+        {current.url !== undefined && current.url !== '' && (
+          <Box paddingX={1}>
+            <Link href={current.url} label={current.url} />
+          </Box>
+        )}
       </Box>
     )
   })

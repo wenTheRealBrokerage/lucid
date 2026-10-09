@@ -22,10 +22,27 @@ export type Pending = {
   isOpen: boolean
 }
 
+/**
+ * A diagram the pane draws as a code block: `ascii` always, `unicode` (box
+ * drawing) where the terminal is known to draw it. Every line fits `maxWidth`.
+ */
+export type Diagram = {
+  ascii: string[]
+  unicode?: string[]
+  maxWidth: number
+}
+
 export type Section = {
   id: string
   heading: string
   markdown: string
+  diagram?: Diagram
+  /** Frames the person steps through with f and b; one line each. */
+  steps?: string[]
+  /** Overrides the length rule for narration: true narrates a short section, false silences a long one. */
+  narrate?: boolean
+  /** One sentence the pane sets apart under the section. */
+  takeaway?: string
   /** Absolute path of the rendered narration, when the section has one. */
   audio?: string
 }
@@ -36,6 +53,7 @@ export type Stage =
   | 'building'
   | 'narrating'
   | 'voicing'
+  | 'paging'
   | 'publishing'
   | 'done'
   | 'failed'
@@ -58,7 +76,9 @@ export type Job = {
   model?: string
   effort?: Effort
   title?: string
+  /** The published artifact, after `/explain publish`. */
   url?: string
+  /** The local HTML page, after `/explain page`. */
   file?: string
   finishedAt?: number
   builderUsage?: Usage
@@ -66,7 +86,14 @@ export type Job = {
   error?: string
 }
 
-export type View = { index: number; playing: string | null }
+/** What the pane shows: which section, which of its frames, whether the contents list is up, what plays. */
+export type View = {
+  index: number
+  step: number
+  isToc: boolean
+  isAuto: boolean
+  playing: string | null
+}
 
 declare module 'claude-code' {
   interface PluginState {
