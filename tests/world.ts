@@ -35,6 +35,9 @@ export type WorldOptions = {
   bytes?: (path: string) => number
   sessionId?: string
   cwd?: string
+  hasLogin?: boolean
+  /** Whether a pane lucid opens is placed; true when not given. */
+  isPlaced?: boolean
 }
 
 export type World = {
@@ -112,6 +115,7 @@ export function world(on: On, options: WorldOptions = {}): World {
   })
 
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.authorize', () => ({ value: options.hasLogin === true ? { handle: 'login-1', kind: 'bearer' } : null }))
   on('session.id', () => ({ value: options.sessionId ?? 'session-1' }))
   on('session.cwd', () => ({ value: options.cwd ?? '/work' }))
   on('session.surfaces', () => ({ value: options.isInteractive === false ? [] : ['terminal'] }))
@@ -122,7 +126,7 @@ export function world(on: On, options: WorldOptions = {}): World {
 
     return { value: { agent: `lucid:${e.name}` } }
   })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => ({ value: options.isPlaced === false ? { isPlaced: false, reason: 'the terminal is 60 columns wide' } : { isPlaced: true } }))
   on('ui.toast', (_$, e) => {
     seen.toasts.push(e.text)
 

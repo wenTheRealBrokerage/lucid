@@ -44,10 +44,40 @@ describe('roster from the models API', () => {
     expect(newestOf(roster.models, 'nothing')).toBeUndefined()
   })
 
+  test('the creation date decides even against a higher version in the id', async () => {
+    const [sonnet] = roster.models.filter(model => model.family === 'sonnet')
+    if (sonnet === undefined) throw new Error('fixture must list a sonnet')
+    const pair = [
+      { ...sonnet, id: 'claude-sonnet-9-9', createdAt: '2026-01-01T00:00:00Z' },
+      { ...sonnet, id: 'claude-sonnet-5-5', createdAt: '2026-09-28T00:00:00Z' },
+    ]
+    expect(newestOf(pair, 'sonnet')?.id).toBe('claude-sonnet-5-5')
+    expect(newestOf([...pair].reverse(), 'sonnet')?.id).toBe('claude-sonnet-5-5')
+  })
+
   test('with no dates the version in the id decides', async () => {
     const undated = roster.models.map(model => ({ ...model, createdAt: '' }))
     expect(newestOf(undated, 'sonnet')?.id).toBe('claude-sonnet-5-5')
     expect(newestOf(undated, 'opus')?.id).toBe('claude-opus-5-5')
+  })
+
+  test('a date stamp at the end of an id is not part of its version, and breaks a tie between equal versions', async () => {
+    const [sonnet] = roster.models.filter(model => model.family === 'sonnet')
+    if (sonnet === undefined) throw new Error('fixture must list a sonnet')
+    const undated = (ids: string[]) => ids.map(id => ({ ...sonnet, id, createdAt: '' }))
+    expect(newestOf(undated(['claude-sonnet-4-20250514', 'claude-sonnet-4-5-20250929']), 'sonnet')?.id).toBe('claude-sonnet-4-5-20250929')
+    expect(newestOf(undated(['claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514']), 'sonnet')?.id).toBe('claude-sonnet-4-5-20250929')
+    expect(newestOf(undated(['claude-sonnet-4-1-20250101', 'claude-sonnet-4-1-20250805']), 'sonnet')?.id).toBe('claude-sonnet-4-1-20250805')
+    expect(newestOf(undated(['claude-sonnet-5', 'claude-sonnet-4-5-20250929']), 'sonnet')?.id).toBe('claude-sonnet-5')
+  })
+
+  test('a config without its objects, or without its tiers, is an error that says which', async () => {
+    expect(() => parseConfig('{}')).toThrow('lucid.config.json needs "roles" and "routing" objects')
+    expect(() => parseConfig(JSON.stringify({ roles: {}, routing: [] }))).toThrow('lucid.config.json needs "roles" and "routing" objects')
+    expect(() => parseConfig(JSON.stringify({ roles: {}, routing: {} }))).toThrow('lucid.config.json needs "ladder", "narrationLadder" and "classifier" tiers')
+    const whole = JSON.parse(CONFIG_TEXT) as Record<string, unknown>
+    expect(() => parseConfig(JSON.stringify({ ...whole, narrationLadder: [] }))).toThrow('"ladder", "narrationLadder" and "classifier" tiers')
+    expect(() => parseConfig(JSON.stringify({ ...whole, classifier: { role: 'fast' } }))).toThrow('"ladder", "narrationLadder" and "classifier" tiers')
   })
 
   test('reads each model its supported effort levels', async () => {
@@ -152,7 +182,9 @@ describe('prices and changes', () => {
     expect(haiku?.inputPerMTok).toBe(0.1)
     expect(haiku?.outputPerMTok).toBe(0.5)
     expect(haiku?.note).toContain('$0.5 in / $2.5 out')
-    expect(prices.find(price => price.name === 'Claude Sonnet 5.5')?.outputPerMTok).toBe(10)
+    const sonnet = prices.find(price => price.name === 'Claude Sonnet 5.5')
+    expect(sonnet?.outputPerMTok).toBe(10)
+    expect(sonnet?.note).toBeUndefined()
   })
 
   test('a page with no table gives no prices, and the fallback table fills in', async () => {

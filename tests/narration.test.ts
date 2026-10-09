@@ -45,7 +45,9 @@ describe('narration JSON repair', () => {
 
   test('a narrated row with an empty script is not narrated', async () => {
     const check = checkNarration('{"sections":[{"id":"split","narrate":true,"script":"  "}]}', SECTIONS)
-    expect(check.isValid && check.sections[0]?.narrate).toBe(false)
+    expect(check.isValid).toBe(true)
+    if (!check.isValid) return
+    expect(check.sections[0]).toEqual({ id: 'split', narrate: false, script: '', chunks: [] })
   })
 
   test('a reply with no JSON, or no sections, fails', async () => {

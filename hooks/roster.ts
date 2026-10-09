@@ -96,9 +96,13 @@ export function familyFromId(id: string): string | undefined {
   return /^[a-z]+-([a-z]+)-\d/.exec(id)?.[1]
 }
 
-const versionOf = (id: string): number[] => (id.match(/\d+/g) ?? []).map(Number)
+const DATE_STAMP = /-(\d{8})$/
 
-/** Newest first: by creation date, then by the version numbers in the id. */
+const versionOf = (id: string): number[] => (id.replace(DATE_STAMP, '').match(/\d+/g) ?? []).map(Number)
+
+const stampOf = (id: string): number => Number(DATE_STAMP.exec(id)?.[1] ?? 0)
+
+/** Newest first: by creation date, then by the version numbers in the id, then by a date stamp the id ends in. */
 export function compareNewest(a: RosterModel, b: RosterModel): number {
   if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1
 
@@ -109,7 +113,7 @@ export function compareNewest(a: RosterModel, b: RosterModel): number {
     if (diff !== 0) return diff
   }
 
-  return 0
+  return stampOf(b.id) - stampOf(a.id)
 }
 
 export function newestOf(models: readonly RosterModel[], family: string): RosterModel | undefined {
