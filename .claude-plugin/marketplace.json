@@ -1,0 +1,13 @@
+{
+  "name": "lucid",
+  "description": "The lucid mod: explainer pages with narration for the questions Claude asks you",
+  "owner": {
+    "name": "Wen Gu"
+  },
+  "plugins": [
+    {
+      "name": "lucid",
+      "source": "./"
+    }
+  ]
+}

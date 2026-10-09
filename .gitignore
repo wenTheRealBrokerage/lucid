@@ -1,0 +1,10 @@
+# engine-laid types (they carry their own .gitignore too)
+.claude-plugin/types/
+node_modules/
+# generated audio and job folders, should one ever land in the repo
+*.m4a
+*.mp3
+*.wav
+*.aiff
+jobs/
+.DS_Store

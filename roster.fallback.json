@@ -1,0 +1,39 @@
+{
+  "asOf": "2026-10-08",
+  "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing.md",
+  "models": [
+    {
+      "id": "claude-haiku-5-5",
+      "family": "haiku",
+      "name": "Claude Haiku 5.5",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "inputPerMTok": 0.1,
+      "outputPerMTok": 0.5,
+      "note": "prompts over 100,000 tokens cost $0.50 in / $2.50 out"
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "family": "sonnet",
+      "name": "Claude Sonnet 5.5",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "inputPerMTok": 2,
+      "outputPerMTok": 10
+    },
+    {
+      "id": "claude-opus-5-5",
+      "family": "opus",
+      "name": "Claude Opus 5.5",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "inputPerMTok": 4,
+      "outputPerMTok": 20
+    },
+    {
+      "id": "claude-fable-5-1",
+      "family": "fable",
+      "name": "Claude Fable 5.1",
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "inputPerMTok": 10,
+      "outputPerMTok": 50
+    }
+  ]
+}

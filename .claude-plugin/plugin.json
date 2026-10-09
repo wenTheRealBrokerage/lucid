@@ -1,0 +1,15 @@
+{
+  "name": "lucid",
+  "version": "0.1.0",
+  "description": "Turns a question Claude asks you into an explainer page with narration, built by a subagent whose model and effort fit the question",
+  "author": {
+    "name": "Wen Gu"
+  },
+  "keywords": [
+    "explainer",
+    "artifact",
+    "tts",
+    "function-hooks"
+  ],
+  "types": "./types/index.d.ts"
+}

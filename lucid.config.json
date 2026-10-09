@@ -1,0 +1,65 @@
+{
+  "roles": {
+    "fast": "haiku",
+    "balanced": "sonnet",
+    "strong": "opus",
+    "frontier": "fable"
+  },
+  "excludeIdPrefixes": [
+    "claude-mythos-"
+  ],
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max"
+  ],
+  "ladder": [
+    {
+      "role": "balanced",
+      "effort": "medium"
+    },
+    {
+      "role": "balanced",
+      "effort": "high"
+    },
+    {
+      "role": "strong",
+      "effort": "medium"
+    },
+    {
+      "role": "strong",
+      "effort": "high"
+    },
+    {
+      "role": "strong",
+      "effort": "xhigh"
+    }
+  ],
+  "routing": {
+    "simple": 0,
+    "moderate": 1,
+    "complex": 3
+  },
+  "classifier": {
+    "role": "fast",
+    "effort": "low"
+  },
+  "narrationLadder": [
+    {
+      "role": "fast",
+      "effort": "low"
+    },
+    {
+      "role": "fast",
+      "effort": "medium"
+    },
+    {
+      "role": "balanced",
+      "effort": "medium"
+    }
+  ],
+  "narrationMinChars": 600,
+  "rosterMaxAgeHours": 24
+}

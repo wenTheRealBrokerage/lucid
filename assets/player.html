@@ -1,0 +1,74 @@
+<style>
+  .lucid-audio { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0.25rem 0 1rem; font: inherit; }
+  .lucid-audio button { font: inherit; font-size: 0.9em; cursor: pointer; padding: 0.4em 0.95em; border-radius: 999px; border: 1px solid currentColor; background: transparent; color: inherit; min-width: 6.5em; }
+  .lucid-audio button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .lucid-audio button[aria-pressed="true"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+  .lucid-audio progress { flex: 1 1 6rem; min-width: 0; max-width: 14rem; height: 0.4rem; accent-color: currentColor; }
+  .lucid-audio small { opacity: 0.75; font-variant-numeric: tabular-nums; }
+</style>
+<script>
+  // lucid's narration player: one play and pause button per narrated section.
+  // The audio is embedded above as data URIs, so nothing is fetched.
+  (function () {
+    var clips = window.LUCID_AUDIO || {};
+    var playing = null;
+
+    function clock(seconds) {
+      if (!isFinite(seconds)) return "0:00";
+      var whole = Math.floor(seconds);
+      return Math.floor(whole / 60) + ":" + String(whole % 60).padStart(2, "0");
+    }
+
+    Object.keys(clips).forEach(function (id) {
+      var section = document.querySelector('[data-lucid-section="' + id + '"]');
+      if (!section) return;
+
+      var box = document.createElement("div");
+      box.className = "lucid-audio";
+      var button = document.createElement("button");
+      button.type = "button";
+      button.id = "lucid-play-" + id;
+      button.setAttribute("aria-pressed", "false");
+      button.textContent = "▶ Listen";
+      var bar = document.createElement("progress");
+      bar.id = "lucid-progress-" + id;
+      bar.max = 1;
+      bar.value = 0;
+      var time = document.createElement("small");
+      time.textContent = "0:00";
+      box.append(button, bar, time);
+
+      var audio = null;
+
+      function show() {
+        var isOn = audio !== null && !audio.paused;
+        button.setAttribute("aria-pressed", String(isOn));
+        button.textContent = isOn ? "❚❚ Pause" : audio && audio.currentTime > 0 && !audio.ended ? "▶ Resume" : "▶ Listen";
+        time.textContent = audio ? clock(audio.currentTime) + " / " + clock(audio.duration) : "0:00";
+        bar.value = audio && audio.duration ? audio.currentTime / audio.duration : 0;
+      }
+
+      button.addEventListener("click", function () {
+        if (audio === null) {
+          audio = new Audio(clips[id]);
+          ["play", "pause", "ended", "timeupdate", "loadedmetadata"].forEach(function (name) {
+            audio.addEventListener(name, show);
+          });
+        }
+        if (!audio.paused) {
+          audio.pause();
+          return;
+        }
+        if (playing && playing !== audio) playing.pause();
+        playing = audio;
+        audio.play().catch(function (error) {
+          time.textContent = "cannot play: " + error.name;
+        });
+      });
+
+      var heading = section.querySelector("h1, h2, h3, h4");
+      if (heading) heading.insertAdjacentElement("afterend", box);
+      else section.insertBefore(box, section.firstChild);
+    });
+  })();
+</script>
