@@ -82,7 +82,7 @@ const DEFAULTS: Settings = {
   roles: {},
   narrationStep: 0,
   shouldOffer: true,
-  shouldConfirm: true,
+  shouldConfirm: false,
   shouldAutoOpen: true,
   shouldPublish: false,
   shouldAnimate: true,
@@ -1365,14 +1365,21 @@ export const register: Register = on => {
       count > 1 && tabsWidth <= width ? (
         <Box paddingX={1} columnGap={3}>
           {current.sections.map((one, i) => (
-            <Button key={`tab-${i}`} label={i === index ? `▸ ${one.heading}` : `  ${one.heading}`} plain dimColor={i !== index} onPress={() => goSection(i)} />
+            <Button key={`tab-${i}`} plain onPress={() => goSection(i)}>
+              {i === index ? (
+                <Text color="claude" bold>
+                  ▸ {one.heading}
+                </Text>
+              ) : (
+                <Text>{`  ${one.heading}`}</Text>
+              )}
+            </Button>
           ))}
         </Box>
       ) : count > 1 ? (
         <Box paddingX={1}>
-          <Text dimColor>
-            {index + 1} of {count} ·{' '}
-          </Text>
+          <Text color="claude">{index + 1}</Text>
+          <Text> of {count} · </Text>
           <Text bold>{section?.heading ?? ''}</Text>
         </Box>
       ) : undefined
@@ -1420,7 +1427,10 @@ export const register: Register = on => {
                 {line}
               </Text>
             ) : (
-              <Text dimColor>✓ {line}</Text>
+              <Text>
+                <Text color="success">✓ </Text>
+                {line}
+              </Text>
             )}
           </Box>
         ))}
@@ -1432,13 +1442,11 @@ export const register: Register = on => {
         <Text dimColor>CONTENTS</Text>
         {current.sections.map((one, i) => (
           <Box key={`toc-${i}`} columnGap={1}>
-            <Text color={i === index ? 'claude' : undefined} dimColor={i !== index}>
-              {i === index ? '●' : '○'}
-            </Text>
+            <Text color="claude">{i === index ? '●' : '○'}</Text>
             {i < 9 ? (
-              <Button key={`toc-go-${i}`} label={one.heading} hotkey={String(i + 1)} plain dimColor={i !== index} onPress={() => goSection(i)} />
+              <Button key={`toc-go-${i}`} label={one.heading} hotkey={String(i + 1)} plain onPress={() => goSection(i)} />
             ) : (
-              <Button key={`toc-go-${i}`} label={one.heading} plain dimColor={i !== index} onPress={() => goSection(i)} />
+              <Button key={`toc-go-${i}`} label={one.heading} plain onPress={() => goSection(i)} />
             )}
           </Box>
         ))}

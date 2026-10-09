@@ -5,7 +5,7 @@ export type TerminalKind = 'jetbrains' | 'iterm' | 'apple-terminal' | 'vscode' |
 
 export type Terminal = {
   kind: TerminalKind
-  /** Whether box-drawing diagrams are drawn without gaps here; false until a terminal is verified. */
+  /** Whether box-drawing diagrams are drawn without gaps here; false until a terminal is verified by hand. */
   unicodeSafe: boolean
   /** Whether the terminal announces 24-bit colour. */
   truecolor: boolean
@@ -22,8 +22,12 @@ export type TerminalEnv = {
   WT_SESSION?: string
 }
 
-/** Emulators verified to draw box drawing and block glyphs without gaps. JetBrains and unknown kinds wait for a verified run. */
-const UNICODE_SAFE: readonly TerminalKind[] = ['iterm', 'apple-terminal', 'vscode', 'warp', 'kitty', 'ghostty', 'windows-terminal']
+/**
+ * Emulators verified to draw box drawing and block glyphs without gaps.
+ * JetBrains joined on 2026-10-09: a Markdown table's borders rendered intact in
+ * the Reworked terminal. Unknown kinds and tmux wait for a verified run.
+ */
+const UNICODE_SAFE: readonly TerminalKind[] = ['iterm', 'apple-terminal', 'vscode', 'warp', 'kitty', 'ghostty', 'windows-terminal', 'jetbrains']
 
 export function probeTerminal(env: TerminalEnv): Terminal {
   const inTmux = (env.TMUX ?? '') !== ''

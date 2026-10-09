@@ -15,7 +15,7 @@ const ROWS: [string, TerminalEnv, { kind: TerminalKind; unicodeSafe: boolean; tr
   ['kitty by TERM', { TERM: 'xterm-kitty', COLORTERM: 'truecolor' }, { kind: 'kitty', unicodeSafe: true, truecolor: true, inTmux: false }],
   ['Ghostty', { TERM_PROGRAM: 'ghostty', TERM: 'xterm-ghostty', COLORTERM: 'truecolor' }, { kind: 'ghostty', unicodeSafe: true, truecolor: true, inTmux: false }],
   ['Windows Terminal', { WT_SESSION: 'abc', COLORTERM: '24bit' }, { kind: 'windows-terminal', unicodeSafe: true, truecolor: true, inTmux: false }],
-  ['JetBrains, unverified so ascii', { TERMINAL_EMULATOR: 'JetBrains-JediTerm', TERM: 'xterm-256color' }, { kind: 'jetbrains', unicodeSafe: false, truecolor: false, inTmux: false }],
+  ['JetBrains, verified 2026-10-09', { TERMINAL_EMULATOR: 'JetBrains-JediTerm', TERM: 'xterm-256color' }, { kind: 'jetbrains', unicodeSafe: true, truecolor: false, inTmux: false }],
   ['tmux hides the outer terminal', { TMUX: '/tmp/tmux-501/default,1,0', TERM: 'tmux-256color', TERM_PROGRAM: 'tmux' }, { kind: 'tmux', unicodeSafe: false, truecolor: false, inTmux: true }],
   ['nothing set', {}, { kind: 'unknown', unicodeSafe: false, truecolor: false, inTmux: false }],
 ]

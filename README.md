@@ -45,7 +45,7 @@ When Claude asks a question with `AskUserQuestion`, the dialog gains two ways to
 - an **Explain this first** option, when the question is single-choice and has fewer than four options;
 - an **Explain this first** button above the dialog, which a mouse click reaches while the dialog stays open. No key reaches it.
 
-Choosing the option withholds the answer from Claude, which waits. lucid then rates the question with one small model call, shows the model and effort it would use, and asks before it builds. The button skips that question, because a second dialog cannot open over the first. Either way the pane opens at once and fills as the build goes.
+Choosing the option withholds the answer from Claude, which waits. lucid rates the question with one small model call, picks the model and effort from that rating, and builds. The pane opens at once and fills as the build goes; it names the model and effort while it runs. `/explain set confirm on` adds a dialog that shows the pick, with one step cheaper or stronger, before anything larger is spent; the button above the dialog skips it, because a second dialog cannot open over the first.
 
 | Command | What it does |
 | --- | --- |
@@ -60,7 +60,7 @@ Choosing the option withholds the answer from Claude, which waits. lucid then ra
 | `/explain open` | Opens that page in a browser. |
 | `/explain publish` | Opt-in. Uploads the page as a private artifact, after asking once. Needs `/explain set publish on` first. |
 | `/explain tts [say [voice] \| kokoro \| hosted]` | Shows or sets the speech engine. |
-| `/explain set <offer \| confirm \| open \| publish \| animate> <on \| off>` | Turns the offer, the confirmation, the browser open after `/explain page`, the publish command, or frame auto-advance on or off. |
+| `/explain set <offer \| confirm \| open \| publish \| animate> <on \| off>` | Turns the offer, the model confirmation dialog (off by default), the browser open after `/explain page`, the publish command, or frame auto-advance on or off. |
 | `/explain-models` | Refreshes the model roster, prints it, and re-checks which model writes narration. |
 | `/explain-models use <role> <family>` | Maps a role to a model family. |
 
@@ -107,11 +107,11 @@ lucid reads `TERMINAL_EMULATOR`, `TERM_PROGRAM`, `TERM`, `COLORTERM`, `TMUX` and
 | Emulator | Box drawing | Notes |
 | --- | --- | --- |
 | iTerm2, Terminal.app, VS Code, Warp, kitty, Ghostty, Windows Terminal | trusted | Terminal.app is treated as 256 colours even when `COLORTERM` says otherwise |
-| JetBrains terminal | ASCII until verified | known font gaps in box drawing; no source describes the Reworked terminal's glyphs |
+| JetBrains terminal | trusted | a Markdown table's box-drawing borders rendered intact in the Reworked terminal on 2026-10-09 |
 | inside tmux | ASCII | the outer emulator's variables do not pass through |
 | anything else | ASCII | |
 
-Colour in the pane comes from theme keys (`claude`, `inverseText`, dim text), so it follows the light or dark theme you picked. No truecolor is assumed. Nothing relies on kitty graphics or on the mouse.
+Colour in the pane comes from theme keys (`claude`, `success`, `error`, `warning`, `inverseText`), so it follows the light or dark theme you picked. Dim text is kept for the keys line and future pipeline stages only, because some palettes draw it near-invisible. No truecolor is assumed. Nothing relies on kitty graphics or on the mouse; clicks work where the terminal reports them.
 
 ## Verified terminals
 
@@ -128,7 +128,7 @@ Run the checklist in each terminal and fill a row. Every cell starts **UNVERIFIE
 | Terminal | Version | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Warp | 2026-10 build, Claude Code 2.1.295 | PASS (dock at 110+, inline on the main screen; 80 columns gives a 63-column body) | PASS for `ctrl+x tab` and the hotkeys in the Phase 0 spike; the lucid keys UNVERIFIED | PASS (table and box-drawing fence in the spike) | PASS (arrows scrolled a 3,000-character section) | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| IntelliJ terminal (Reworked 2025) | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| IntelliJ terminal (Reworked 2025) | 2026-10 build | PASS (pane seated and drew a full explainer) | UNVERIFIED | PASS for a table (borders intact); a diagram UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 | IntelliJ terminal (Classic) | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 | iTerm2 | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 | Terminal.app | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |

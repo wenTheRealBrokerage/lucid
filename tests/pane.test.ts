@@ -55,7 +55,7 @@ describe('the explainer pane', () => {
     expect(text).toContain('Optimistic locking')
     expect(text).toContain('The race')
     expect(text).toContain('1 / 3')
-    expect((await ui.find({ key: 'tab-1' }))?.props.label).toBe('  A version column')
+    expect((await ui.find({ key: 'tab-1' }))?.text).toContain('A version column')
     expect(text).toContain('Lost updates make no noise.')
     expect((await ui.find({ type: 'Code' }))?.props.source).toBe('┌───┐\n│ a │\n└───┘')
     expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
@@ -66,7 +66,7 @@ describe('the explainer pane', () => {
 
   test('an unverified terminal gets the ascii diagram, and a page button appears once a file exists', async ($, on) => {
     mock.store(on)
-    mock.env(on, { TERMINAL_EMULATOR: 'JetBrains-JediTerm' })
+    mock.env(on, { TERM: 'xterm-256color' })
     seedJob(on, { ...kept(), file: '/data/jobs/j1/explainer.html' })
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
     expect((await ui.find({ type: 'Code' }))?.props.source).toBe('+---+\n| a |\n+---+')
