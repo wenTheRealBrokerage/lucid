@@ -100,6 +100,23 @@ describe('the explainer pane', () => {
     await ui.unmount()
   })
 
+  test('two presses before a redraw both land, for sections and for frames', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, kept())
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    await Promise.all([ui.press({ key: 'next' }), ui.press({ key: 'next' })])
+    expect(await textOf(ui)).toContain('3 / 3')
+    await Promise.all([ui.press({ key: 'prev' }), ui.press({ key: 'prev' })])
+    expect(await textOf(ui)).toContain('1 / 3')
+    await ui.press({ key: 'next' })
+    await Promise.all([ui.press({ key: 'frame' }), ui.press({ key: 'frame' })])
+    expect(await textOf(ui)).toContain('●━●━◉')
+    await Promise.all([ui.press({ key: 'auto' }), ui.press({ key: 'auto' })])
+    expect(await textOf(ui)).not.toContain('· auto')
+    await ui.unmount()
+  })
+
   test('frames step forward and back, and auto-advance runs them on the clock until the last one', async ($, on) => {
     const clock = mock.clock(on)
     mock.store(on)

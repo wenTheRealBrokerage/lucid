@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { parseConfig } from '../hooks/roster'
-import { escalate, parseComplexity, shiftStep, stepFor, tierAt } from '../hooks/routing'
+import { addUsage, escalate, parseComplexity, shiftStep, stepFor, tierAt } from '../hooks/routing'
 
 import { CONFIG_TEXT } from './fixtures'
 
@@ -45,5 +45,20 @@ describe('complexity to tier', () => {
     expect(stepFor('simple', odd)).toBe(0)
     expect(stepFor('moderate', odd)).toBe(odd.ladder.length - 1)
     expect(stepFor('complex', odd)).toBe(odd.ladder.length - 1)
+  })
+})
+
+describe('token counts over several attempts', () => {
+  const first = { input: 10, output: 2, cacheRead: 3, cacheWrite: 4 }
+  const second = { input: 5, output: 1, cacheRead: 0, cacheWrite: 6 }
+
+  test('two measured attempts are summed field by field', async () => {
+    expect(addUsage(first, second)).toEqual({ input: 15, output: 3, cacheRead: 3, cacheWrite: 10 })
+  })
+
+  test('an attempt that measured nothing leaves the other as it was', async () => {
+    expect(addUsage(first, undefined)).toEqual(first)
+    expect(addUsage(undefined, second)).toEqual(second)
+    expect(addUsage(undefined, undefined)).toBeUndefined()
   })
 })

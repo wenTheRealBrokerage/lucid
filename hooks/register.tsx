@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Complexity, Effort, Job, Pending, Section, Stage, Usage, View } from '../types'
 
-import { checkExplainer, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths, widthOf } from './explainer'
+import { checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths, widthOf } from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
@@ -23,7 +23,7 @@ import {
   unknownFamilies,
 } from './roster'
 import type { Config, Roster, RosterModel } from './roster'
-import { escalate, parseComplexity, shiftStep, stepFor, tierAt } from './routing'
+import { addUsage, escalate, parseComplexity, shiftStep, stepFor, tierAt } from './routing'
 import { probeTerminal } from './terminal'
 import type { Terminal } from './terminal'
 
@@ -43,6 +43,7 @@ const EMPTY_CLIP_BYTES = 40_000
 const WITHHELD =
   'The user chose "Explain this first": they want an explainer before they answer, so this is not an answer. The lucid mod is building it now. Tell them so in one short line and end your turn. When they say they are ready, ask the same question again with the same options.'
 const KEPT = 'lucid read its own subagent report, so it does not start a turn here'
+const INTERRUPTED = 'a reload of lucid interrupted this build; run /explain again'
 const USAGE = '[view | status | stop | cancel | revoice | page | open | publish | tts | set | about <text>]'
 
 const notStarted = (reason: string): string =>
@@ -116,13 +117,12 @@ const AGENT_ROLE: Record<AgentKind, string> = {
   'narration-writer': 'Writes narration scripts for the lucid mod. Only lucid starts it.',
 }
 
-// Module state: gone on a hot reload, which only costs a job in flight.
+// Module state: gone on a hot reload. A job in flight then has no one running it, and session.start settles it.
 const waiting = new Map<string, (done: Finished) => void>()
 const finished = new Map<string, Finished>()
 const mine = new Set<string>()
 let playback: AbortController | null = null
 let autoTimer: { cancel: () => void } | null = null
-let cancelled = ''
 let config: Config | undefined
 let terminal: Terminal | undefined
 
@@ -218,7 +218,13 @@ async function refreshRoster($: EngineInterface, isForced: boolean): Promise<{ r
 }
 
 async function patchJob($: EngineInterface, id: string, change: Partial<Job>): Promise<void> {
-  await update($, job, current => (current !== null && current.id === id ? { ...current, ...change } : current))
+  await update($, job, current => (current !== null && current.id === id && current.stage !== 'cancelled' ? { ...current, ...change } : current))
+}
+
+async function isAt($: EngineInterface, id: string, stage?: Stage): Promise<boolean> {
+  const current = await read($, job)
+
+  return current !== null && current.id === id && (stage === undefined ? isLive(current) : current.stage === stage)
 }
 
 /** Keeps a finished job beside its files, so it outlives /clear and the session. */
@@ -229,23 +235,30 @@ async function keepJob($: EngineInterface, id: string): Promise<void> {
   await $.store.set('lastJob', `${current.dir}/job.json`)
 }
 
-/** The explainer in hand: this session's, else the last one finished, read back from its folder. */
-async function recallJob($: EngineInterface): Promise<Job | null> {
-  const current = await read($, job)
-  if (current !== null) return current
-
-  const file = await $.store.get('lastJob')
+async function keptJob($: EngineInterface): Promise<Job | null> {
+  const file = await $.store.get('lastJob').catch(() => undefined)
   const text = typeof file === 'string' ? await $.fs.read(file).catch(() => undefined) : undefined
   if (text === undefined) return null
 
   try {
-    const kept = JSON.parse(text) as Job
-    await update($, job, () => kept)
+    const kept: unknown = JSON.parse(text)
 
-    return kept
+    return isKeptJob(kept) ? kept : null
   } catch {
     return null
   }
+}
+
+/** The explainer in hand: this session's unless it failed or was cancelled, else the last one finished, read back from its folder. */
+async function recallJob($: EngineInterface): Promise<Job | null> {
+  const current = await read($, job)
+  if (current !== null && current.stage !== 'failed' && current.stage !== 'cancelled') return current
+
+  const kept = await keptJob($)
+  if (kept === null) return current
+  await update($, job, now => (isLive(now) ? now : kept))
+
+  return read($, job)
 }
 
 /** The tail of the conversation, bounded: what a builder needs to know what the question is about. */
@@ -391,7 +404,8 @@ function startAuto($: EngineInterface): void {
 async function openPage($: EngineInterface): Promise<string> {
   const current = await recallJob($)
   const local = current?.file === undefined ? undefined : `file://${current.file}`
-  const target = current?.url || local
+  const published = current?.url || undefined
+  const target = current?.isUrlStale === true ? (local ?? published) : (published ?? local)
   if (target === undefined) return 'there is no page to open yet'
 
   if (local !== undefined) {
@@ -418,8 +432,9 @@ function stopPlayback(): void {
 
 async function playSection($: EngineInterface, id: string): Promise<void> {
   stopPlayback()
-  const section = (await read($, job))?.sections.find(one => one.id === id)
-  if (section?.audio === undefined) return
+  const played = await read($, job)
+  const section = played?.sections.find(one => one.id === id)
+  if (played === null || section?.audio === undefined) return
 
   const stop = new AbortController()
   playback = stop
@@ -438,7 +453,8 @@ async function playSection($: EngineInterface, id: string): Promise<void> {
   if (playback === stop) {
     playback = null
     await update($, view, seen => ({ ...seen, playing: null }))
-    const current = isEnded ? await read($, job) : null
+    const now = isEnded ? await read($, job) : null
+    const current = now?.id === played.id ? now : null
     const at = current?.sections.findIndex(one => one.id === id) ?? -1
     const following = current === null || at < 0 ? undefined : nextNarrated(current.sections, at)
     const next = following === undefined ? undefined : current?.sections[following]
@@ -469,6 +485,16 @@ async function hasSpeech($: EngineInterface, file: string, script: Narrated): Pr
   const size = (await $.fs.stat(file).catch(() => undefined))?.size ?? 0
 
   return size > EMPTY_CLIP_BYTES || size > script.script.length * MIN_AUDIO_BYTES_PER_CHAR + EMPTY_CLIP_BYTES / 2
+}
+
+async function keepIfSpoken($: EngineInterface, fresh: string, out: string, script: Narrated): Promise<string | undefined> {
+  if (await hasSpeech($, fresh, script)) {
+    const moved = await $.process.run(['mv', '-f', fresh, out]).catch(() => undefined)
+    if (moved?.exitCode === 0) return out
+  }
+  await $.process.run(['rm', '-f', fresh]).catch(() => undefined)
+
+  return undefined
 }
 
 /** Renders one section's script to an audio file with the chosen engine; undefined when it cannot. */
@@ -519,18 +545,19 @@ async function renderSpeech($: EngineInterface, settings: Settings, dir: string,
     }
 
     if (parts.length === script.chunks.length && parts.length > 0) {
-      const out = `${dir}/audio/${script.id}.mp3`
-      const joined = await $.process.run(['/bin/sh', '-c', 'out=$1; shift; cat "$@" > "$out"', 'sh', out, ...parts]).catch(() => undefined)
-      if (joined?.exitCode === 0 && (await hasSpeech($, out, script))) return out
+      const fresh = `${dir}/audio/${script.id}.new.mp3`
+      const joined = await $.process.run(['/bin/sh', '-c', 'out=$1; shift; cat "$@" > "$out"', 'sh', fresh, ...parts]).catch(() => undefined)
+      const kept = joined?.exitCode === 0 ? await keepIfSpoken($, fresh, `${dir}/audio/${script.id}.mp3`, script) : undefined
+      if (kept !== undefined) return kept
     }
     $.ui.log('hosted speech failed; using the system voice for this section', { to: 'debug' })
   }
 
-  const out = `${dir}/audio/${script.id}.m4a`
+  const fresh = `${dir}/audio/${script.id}.new.m4a`
   const voice = settings.tts === 'say' && settings.voice !== '' ? ['-v', settings.voice] : []
-  const said = await $.process.run(['say', ...voice, '-o', out, '--data-format=aac', '-f', text], { timeoutMs: 600_000 }).catch(() => undefined)
+  const said = await $.process.run(['say', ...voice, '-o', fresh, '--data-format=aac', '-f', text], { timeoutMs: 600_000 }).catch(() => undefined)
 
-  return said?.exitCode === 0 && (await hasSpeech($, out, script)) ? out : undefined
+  return said?.exitCode === 0 ? keepIfSpoken($, fresh, `${dir}/audio/${script.id}.m4a`, script) : undefined
 }
 
 /** Asks the narration ladder, cheapest rung first, for scripts that pass the checks. */
@@ -541,6 +568,7 @@ async function writeNarration(
   const table = await loadConfig($)
   const notes: string[] = []
   let refusedRole = ''
+  let usage: Usage | undefined
 
   for (let step = input.from; step < table.narrationLadder.length; step += 1) {
     const tier = table.narrationLadder[step]
@@ -560,6 +588,7 @@ async function writeNarration(
       description: 'Write narration scripts',
       timeoutMs: 5 * 60_000,
     })
+    usage = addUsage(usage, done.usage)
 
     if (done.reason === 'refusal') {
       // A refusal is the model's, not the effort's: go on to another family.
@@ -575,12 +604,12 @@ async function writeNarration(
 
     const check = checkNarration(done.answer, input.sections, input.isStrict)
     if (check.isValid) {
-      return { scripts: check.sections, step, model: done.model, notes: [...notes, ...check.repairs], ...(done.usage ? { usage: done.usage } : {}) }
+      return { scripts: check.sections, step, model: done.model, notes: [...notes, ...check.repairs], ...(usage ? { usage } : {}) }
     }
     notes.push(`${done.model} at ${pick.effort}: ${check.problems.join('; ')}`)
   }
 
-  return { scripts: [], step: -1, model: '', notes }
+  return { scripts: [], step: -1, model: '', notes, ...(usage ? { usage } : {}) }
 }
 
 /**
@@ -589,31 +618,51 @@ async function writeNarration(
  */
 async function voice(
   $: EngineInterface,
-  input: { id: string; dir: string; sections: readonly Section[]; scripts: readonly Narrated[]; settings: Settings; caveat: string },
+  input: {
+    id: string
+    dir: string
+    sections: readonly Section[]
+    scripts: readonly Narrated[]
+    settings: Settings
+    caveat: string
+    isWanted: () => Promise<boolean>
+    finishedAt?: number
+  },
 ): Promise<void> {
   const { id, dir, settings } = input
   const narrated = input.scripts.filter(one => one.narrate)
-  let sections: Section[] = input.sections.map(({ audio: _audio, ...section }) => ({ ...section }))
+  let sections: Section[] = input.sections.map(section => ({ ...section }))
   let clips = 0
 
   if (narrated.length > 0) await patchJob($, id, { stage: 'voicing', note: `rendering speech for ${narrated.length} sections with ${settings.tts}` })
 
   for (const script of narrated) {
+    if (!(await input.isWanted())) break
     const audio = await renderSpeech($, settings, dir, script)
     if (audio === undefined) continue
     clips += 1
     sections = sections.map(section => (section.id === script.id ? { ...section, audio } : section))
   }
 
+  if (!(await input.isWanted())) {
+    if (clips > 0) {
+      await patchJob($, id, { sections })
+      if (await isAt($, id, 'done')) await keepJob($, id)
+    }
+
+    return
+  }
+
+  const hasEarlier = sections.some(section => section.audio !== undefined)
   const voiced =
     clips > 0
       ? `${clips} narrated sections`
       : narrated.length > 0
-        ? `the ${settings.tts} speech engine produced no audio here (the macOS system voice cannot speak in some tmux and SSH sessions)`
+        ? `the ${settings.tts} speech engine produced no audio here (the macOS system voice cannot speak in some tmux and SSH sessions)${hasEarlier ? '; the earlier clips are kept' : ''}`
         : 'no section was long enough to narrate'
   const note = input.caveat === '' ? voiced : `${voiced}; ${input.caveat}`
 
-  await patchJob($, id, { stage: 'done', sections, note, finishedAt: await $.clock.now() })
+  await patchJob($, id, { stage: 'done', sections, note, finishedAt: input.finishedAt ?? (await $.clock.now()) })
   await keepJob($, id)
   $.ui.toast('explainer ready: ctrl+x tab reads it in the pane; /explain view brings it back', { timeoutMs: 10_000 })
 }
@@ -628,6 +677,7 @@ async function buildPage($: EngineInterface): Promise<void> {
   const { id, dir } = current
   const title = current.title ?? 'Explainer'
   const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}-page`
+  await patchJob($, id, { stage: 'paging', note: 'a builder is writing the page' })
 
   try {
     const table = await loadConfig($)
@@ -642,7 +692,8 @@ async function buildPage($: EngineInterface): Promise<void> {
     for (let attempt = 0; attempt < 2 && html === undefined; attempt += 1) {
       const pick = resolveTier(tierAt(step, table), roster, roles, table)
       if (!pick.isResolved) throw new Error(pick.error)
-      await patchJob($, id, { stage: 'paging', note: attempt === 0 ? 'a builder is writing the page' : 'the first page failed its checks; rebuilding one step up' })
+      if (!(await isAt($, id, 'paging'))) return
+      if (attempt > 0) await patchJob($, id, { note: 'the first page failed its checks; rebuilding one step up' })
 
       const built = await runAgent($, {
         kind: 'explainer-page',
@@ -670,6 +721,7 @@ async function buildPage($: EngineInterface): Promise<void> {
       }
     }
 
+    if (!(await isAt($, id, 'paging'))) return
     if (html === undefined) throw new Error(`the page failed its checks: ${problems.slice(0, 3).join('; ')}`)
 
     await $.fs.write(`${dir}/page.html`, html)
@@ -681,11 +733,13 @@ async function buildPage($: EngineInterface): Promise<void> {
       .catch(() => undefined)
     const file = embedded?.exitCode === 0 ? final : `${dir}/page.html`
 
-    await patchJob($, id, { stage: 'done', file, note: `page written: ${file}` })
+    if (!(await isAt($, id, 'paging'))) return
+    await patchJob($, id, { stage: 'done', file, note: `page written: ${file}`, ...(current.url ? { isUrlStale: true } : {}) })
     await keepJob($, id)
     $.ui.toast('page ready: /explain open opens it; /explain publish uploads it', { timeoutMs: 8000 })
     if (settings.shouldAutoOpen) $.ui.log(await openPage($))
   } catch (err) {
+    if (!(await isAt($, id, 'paging'))) return
     await patchJob($, id, { stage: 'done', note: `page not built: ${words(err)}` })
     $.ui.toast(`no page. ${words(err)}`, { timeoutMs: 10_000 })
   }
@@ -728,7 +782,10 @@ async function publishPage($: EngineInterface): Promise<void> {
   const result = 'result' in published ? (published.result as { url?: unknown } | undefined) : undefined
   const url = typeof result?.url === 'string' ? result.url : undefined
 
-  await patchJob($, current.id, { stage: 'done', note: url === undefined ? 'not published' : 'published privately', ...(url === undefined ? {} : { url }) })
+  await patchJob($, current.id, {
+    ...((await isAt($, current.id, 'publishing')) ? { stage: 'done', note: url === undefined ? 'not published' : 'published privately' } : {}),
+    ...(url === undefined ? {} : { url, isUrlStale: false }),
+  })
   await keepJob($, current.id)
   $.ui.log(url === undefined ? `not published (${'deny' in published && published.deny ? published.deny : 'the Artifact tool gave no link'})` : `published privately: ${url}`)
 }
@@ -750,39 +807,34 @@ async function revoice($: EngineInterface): Promise<void> {
     return
   }
 
-  await voice($, { scripts, id: current.id, dir: current.dir, sections: current.sections, settings: await loadSettings($), caveat: '' }).catch((err: unknown) =>
-    patchJob($, current.id, { stage: 'failed', note: words(err), error: words(err) }),
-  )
+  const { id } = current
+  await voice($, {
+    scripts,
+    id,
+    dir: current.dir,
+    sections: current.sections,
+    settings: await loadSettings($),
+    caveat: '',
+    isWanted: () => isAt($, id, 'voicing'),
+    ...(current.finishedAt === undefined ? {} : { finishedAt: current.finishedAt }),
+  }).catch(async (err: unknown) => {
+    if (await isAt($, id, 'voicing')) await patchJob($, id, { stage: 'done', note: `the narration was not rendered again: ${words(err)}` })
+  })
 }
 
 /** The whole job, start to finish. Runs off any hook's dispatch: started from a timer, the pane already open. */
-async function runJob($: EngineInterface, asked: Asked): Promise<void> {
-  const { origin, question, isDialogOpen, dialogId } = asked
-  const now = await $.clock.now()
-  const id = `j${now.toString(36)}`
-  const dir = `${await dataDir($)}/jobs/${id}`
-  const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}`
-
-  const fresh: Job = {
-    id,
-    origin,
-    question,
-    dir,
-    stage: 'classifying',
-    note: 'rating the question',
-    startedAt: now,
-    sections: [],
-    ...(dialogId === undefined ? {} : { dialogId }),
-  }
-  await update($, job, () => fresh)
-  await update($, view, () => FRESH_VIEW)
+async function runJob($: EngineInterface, fresh: Job, isDialogOpen: boolean): Promise<void> {
+  const { id, dir, question } = fresh
+  const isWanted = () => isAt($, id)
 
   const fail = async (error: string) => {
+    if (!(await isWanted())) return
     await patchJob($, id, { stage: 'failed', error, note: error, finishedAt: await $.clock.now() })
     $.ui.toast(`no explainer. ${error}`, { timeoutMs: 10_000 })
   }
 
   try {
+    const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}`
     const table = await loadConfig($)
     const settings = await loadSettings($)
     const roles = { ...table.roles, ...settings.roles }
@@ -810,6 +862,7 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
 
     // 2. The choice, shown before anything larger is spent.
     for (let turn = 0; turn < 8; turn += 1) {
+      if (!(await isWanted())) return
       const pick = resolveTier(tierAt(step, table), roster, roles, table)
       if (!pick.isResolved) return await fail(pick.error)
       const choice = `${pick.model.id} at ${pick.effort} effort`
@@ -843,7 +896,7 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
     let builderUsage: Usage | undefined
 
     for (let attempt = 0; attempt < 2 && document === undefined; attempt += 1) {
-      if (cancelled === id) return
+      if (!(await isWanted())) return
       const pick = resolveTier(tierAt(step, table), roster, roles, table)
       if (!pick.isResolved) return await fail(pick.error)
       await patchJob($, id, {
@@ -863,7 +916,7 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
         description: 'Build explainer',
         timeoutMs: 20 * 60_000,
       })
-      builderUsage = built.usage ?? builderUsage
+      builderUsage = addUsage(builderUsage, built.usage)
       await patchJob($, id, { model: built.model, ...(builderUsage ? { builderUsage } : {}) })
 
       const written = await $.fs.read(`${work}/explainer.json`).catch(() => undefined)
@@ -883,8 +936,8 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
       }
     }
 
+    if (!(await isWanted())) return
     if (document === undefined) return await fail(`the explainer failed its checks: ${problems.slice(0, 3).join('; ')}`)
-    if (cancelled === id) return
 
     await $.fs.write(`${dir}/explainer.json`, JSON.stringify(document, null, 2))
     await patchJob($, id, { stage: 'narrating', title: document.title, sections: document.sections, note: 'writing narration for the long sections' })
@@ -900,10 +953,10 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
       if (written.notes.length > 0) $.ui.log(`narration notes: ${written.notes.join(' | ')}`, { to: 'debug' })
       if (written.scripts.length === 0) caveat = 'no narration writer passed its checks, so the narration reads the sections as written'
       scripts = written.scripts.length > 0 ? written.scripts : rawNarration(long)
-      if (cancelled === id) return
+      if (!(await isWanted())) return
     }
 
-    await voice($, { id, dir, scripts, settings, caveat, sections: document.sections })
+    await voice($, { id, dir, scripts, settings, caveat, isWanted, sections: document.sections })
   } catch (err) {
     await fail(words(err))
   }
@@ -912,19 +965,41 @@ async function runJob($: EngineInterface, asked: Asked): Promise<void> {
 /** Starts a job off the calling dispatch. Says why not when one cannot start. */
 async function startJob($: EngineInterface, asked: Asked): Promise<Start> {
   if (!(await isInteractive($))) return { kind: 'refused', text: 'explainers need an interactive session' }
-  const current = await read($, job)
-  if (isLive(current)) {
-    return { kind: current.question === asked.question ? 'same-question' : 'refused', text: 'an explainer is already being built; /explain status shows where it is' }
-  }
   if (asked.question.trim() === '') {
     return { kind: 'refused', text: 'there is no question to explain yet. Run /explain after Claude asks one, or /explain about <text>.' }
   }
 
+  const now = await $.clock.now()
+  const id = `j${now.toString(36)}`
+  const fresh: Job = {
+    id,
+    origin: asked.origin,
+    question: asked.question,
+    dir: `${await dataDir($)}/jobs/${id}`,
+    stage: 'classifying',
+    note: 'rating the question',
+    startedAt: now,
+    sections: [],
+    ...(asked.dialogId === undefined ? {} : { dialogId: asked.dialogId }),
+  }
+  let running: Job | null = null
+  await update($, job, current => {
+    running = isLive(current) ? current : null
+
+    return running === null ? fresh : current
+  })
+  const live = running as Job | null
+  if (live !== null) {
+    return { kind: live.question === asked.question ? 'same-question' : 'refused', text: 'an explainer is already being built; /explain status shows where it is' }
+  }
+
   // Opened here, inside the command or the press that asked, so it seats at any width; the build itself runs off this dispatch.
   stopAuto()
+  stopPlayback()
+  await update($, view, () => FRESH_VIEW)
   await openPane($, !asked.isDialogOpen)
   $.clock.after(1, () => {
-    void runJob($, asked)
+    void runJob($, fresh, asked.isDialogOpen)
   })
 
   return { kind: 'started', text: 'rating the question, then it shows the model and effort it would use' }
@@ -935,7 +1010,7 @@ function describeJob(current: Job | null): string {
   const choice = current.model === undefined ? '' : ` | ${current.model} at ${current.effort ?? '?'} effort (rated ${current.complexity ?? '?'})`
   const spent = current.builderUsage === undefined ? '' : ` | builder tokens ${tokens(current.builderUsage)}; narration tokens ${tokens(current.narratorUsage)}`
   const took = current.finishedAt === undefined ? '' : ` | ${Math.round((current.finishedAt - current.startedAt) / 1000)} s`
-  const where = current.url || current.file || ''
+  const where = (current.isUrlStale === true ? current.file || current.url : current.url || current.file) || ''
 
   return `${current.stage}: ${current.note}${choice}${spent}${took}${where ? ` | ${where}` : ''}`
 }
@@ -982,7 +1057,7 @@ async function reviewModels($: EngineInterface): Promise<void> {
   const was = settings.narrationStep
   await saveSettings($, { narrationStep: tried.step })
   $.ui.log(
-    `narration writer: ${tried.model} at ${tier?.effort ?? '?'} effort is the cheapest rung that passed the fixtures (${tokens(tried.usage)} tokens)` +
+    `narration writer: ${tried.model} at ${tier?.effort ?? '?'} effort is the cheapest rung that passed the fixtures (${tokens(tried.usage)} tokens over the rungs tried)` +
       (was === tried.step ? '; unchanged' : `; was rung ${was + 1}, now rung ${tried.step + 1}`) +
       (tried.notes.length > 0 ? `; notes: ${tried.notes.join(' | ')}` : ''),
   )
@@ -1060,6 +1135,22 @@ async function ttsCommand($: EngineInterface, rest: string[]): Promise<string> {
   return 'speech engines are say [voice], kokoro and hosted'
 }
 
+async function settleOrphan($: EngineInterface): Promise<void> {
+  const orphan = await read($, job)
+
+  if (isLive(orphan)) {
+    const now = await $.clock.now()
+    if (orphan.sections.length === 0) {
+      await patchJob($, orphan.id, { stage: 'failed', note: INTERRUPTED, error: INTERRUPTED, finishedAt: now })
+    } else {
+      await patchJob($, orphan.id, { stage: 'done', note: 'a reload of lucid interrupted the last step; the explainer is as it stood', finishedAt: orphan.finishedAt ?? now })
+      await keepJob($, orphan.id)
+    }
+  }
+
+  if ((await read($, view)).playing !== null) await update($, view, seen => ({ ...seen, playing: null }))
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -1072,6 +1163,8 @@ export const register: Register = on => {
       description: 'Refresh the model roster lucid picks from and re-check its narration writer',
       argumentHint: '[use <role> <family>]',
     })
+
+    await settleOrphan($).catch(() => undefined)
 
     // A reload drops the frame timer; the view atom still says whether it ran.
     if ((await read($, view)).isAuto) startAuto($)
@@ -1179,7 +1272,7 @@ export const register: Register = on => {
 
   on('command.run', { command: 'explain' }, async ($, e) => {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
-    const isAboutLast = ['view', 'open', 'status', 'revoice', 'page', 'publish'].includes(verb)
+    const isAboutLast = ['view', 'open', 'revoice', 'page', 'publish'].includes(verb)
     const current = isAboutLast ? await recallJob($) : await read($, job)
 
     if (verb === 'view') {
@@ -1211,7 +1304,7 @@ export const register: Register = on => {
 
       return { text: 'asking before anything is uploaded' }
     }
-    if (verb === 'status') return { text: describeJob(current) }
+    if (verb === 'status') return { text: describeJob(current ?? (await recallJob($))) }
     if (verb === 'tts') return { text: await ttsCommand($, rest) }
 
     if (verb === 'revoice') {
@@ -1246,7 +1339,12 @@ export const register: Register = on => {
 
     if (verb === 'cancel') {
       if (!isLive(current)) return { text: 'nothing is being built' }
-      cancelled = current.id
+      if (current.finishedAt !== undefined) {
+        const what = current.stage === 'paging' ? 'the page build' : current.stage === 'publishing' ? 'publishing' : 'the new narration'
+        await patchJob($, current.id, { stage: 'done', note: `${what} was cancelled; the explainer is as it stood` })
+
+        return { text: `cancelled ${what}; the explainer is kept` }
+      }
       await patchJob($, current.id, { stage: 'cancelled', note: 'cancelled; a subagent already running finishes on its own', finishedAt: await $.clock.now() })
 
       return { text: 'cancelled' }
@@ -1340,7 +1438,9 @@ export const register: Register = on => {
     const canAskAgain = current.origin === 'option' && current.stage === 'done' && current.dialogId !== undefined && held?.id === current.dialogId
     const clamp = (at: number) => Math.min(Math.max(at, 0), Math.max(count - 1, 0))
     const goSection = (to: number) => update($, view, shown => ({ ...shown, index: clamp(to), step: 0, isToc: false }))
-    const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(step + by, 0), Math.max(steps.length - 1, 0)) }))
+    const stepSection = (by: number) => update($, view, shown => ({ ...shown, index: clamp(clamp(shown.index) + by), step: 0, isToc: false }))
+    const lastStep = Math.max(steps.length - 1, 0)
+    const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(Math.min(shown.step, lastStep) + by, 0), lastStep) }))
 
     // A thin reading-progress bar across the whole width, in eighths.
     const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
@@ -1564,8 +1664,8 @@ export const register: Register = on => {
         {count > 0 && !seen.isToc && <Box paddingTop={1}>{tabs}</Box>}
         {body}
         <Box columnGap={1} paddingX={1} flexWrap="wrap">
-          {count > 1 && <Button key="prev" label="◀ Prev" hotkey="p" onPress={() => goSection(index - 1)} />}
-          {count > 1 && <Button key="next" label="Next ▶" hotkey="n" variant="primary" onPress={() => goSection(index + 1)} />}
+          {count > 1 && <Button key="prev" label="◀ Prev" hotkey="p" onPress={() => stepSection(-1)} />}
+          {count > 1 && <Button key="next" label="Next ▶" hotkey="n" variant="primary" onPress={() => stepSection(1)} />}
           {steps.length > 1 && <Button key="frame-back" label="‹ Frame" hotkey="b" onPress={() => goStep(-1)} />}
           {steps.length > 1 && <Button key="frame" label="Frame ›" hotkey="f" onPress={() => goStep(1)} />}
           {steps.length > 1 && settings.shouldAnimate && (
@@ -1574,9 +1674,8 @@ export const register: Register = on => {
               label={seen.isAuto ? '⟳ Pause' : '⟳ Auto'}
               hotkey="g"
               onPress={async () => {
-                const isOn = !seen.isAuto
-                await update($, view, shown => ({ ...shown, isAuto: isOn, step: isOn && step >= steps.length - 1 ? 0 : shown.step }))
-                if (isOn) startAuto($)
+                await update($, view, shown => ({ ...shown, isAuto: !shown.isAuto, step: !shown.isAuto && shown.step >= lastStep ? 0 : shown.step }))
+                if ((await read($, view)).isAuto) startAuto($)
                 else stopAuto()
               }}
             />
@@ -1638,7 +1737,7 @@ export const register: Register = on => {
         )}
         {current.url !== undefined && current.url !== '' && (
           <Box paddingX={1}>
-            <Link href={current.url} label={current.url} />
+            <Link href={current.url} label={current.isUrlStale === true ? `${current.url} (older than the local page; /explain publish uploads the new one)` : current.url} />
           </Box>
         )}
       </Box>

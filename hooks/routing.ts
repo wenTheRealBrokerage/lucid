@@ -1,4 +1,4 @@
-import type { Complexity, Tier } from '../types'
+import type { Complexity, Tier, Usage } from '../types'
 
 import type { Config } from './roster'
 
@@ -30,6 +30,12 @@ export function shiftStep(step: number, by: number, config: Config): number {
 /** The next rung up, or undefined at the top of the ladder. */
 export function escalate(step: number, config: Config): number | undefined {
   return step + 1 < config.ladder.length ? step + 1 : undefined
+}
+
+export function addUsage(a: Usage | undefined, b: Usage | undefined): Usage | undefined {
+  if (a === undefined || b === undefined) return a ?? b
+
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite }
 }
 
 export function tierAt(step: number, config: Config): Tier {

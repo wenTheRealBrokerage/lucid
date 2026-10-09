@@ -54,7 +54,7 @@ Choosing the option withholds the answer from Claude, which waits. lucid rates t
 | `/explain view` | Opens the pane with the keyboard. Brings back the last explainer after `/clear` or a restart. Where no pane fits, prints the current section instead. |
 | `/explain status` | Says where the build is, with the model, effort and measured tokens. |
 | `/explain stop` | Stops narration playing in the terminal. |
-| `/explain cancel` | Cancels a build. A subagent already running finishes on its own. |
+| `/explain cancel` | Cancels a build. Cancels a page build, a revoice or a publish under way on a finished explainer, which is kept as it stood. A subagent already running finishes on its own. |
 | `/explain revoice` | Renders the last explainer's narration again with the current speech engine. |
 | `/explain page` | Opt-in. A second subagent writes an HTML page from the finished explainer, with the narration embedded, to a local file. |
 | `/explain open` | Opens that page in a browser. |
@@ -156,7 +156,7 @@ When the API cannot be reached, lucid uses Claude Code's own aliases for each fa
 
 An effort a model does not support is lowered to one it does. A classifier reply that names no label, or more than one, counts as moderate. `/explain page` starts on the rung the explainer was built on.
 
-lucid shows measured token counts after a build. It never shows a cost estimate.
+lucid shows measured token counts after a build: the builder's count sums every build attempt, and the narration count sums every narration writer tried. The rating call and the page builder are not counted. It never shows a cost estimate.
 
 ## Speech
 

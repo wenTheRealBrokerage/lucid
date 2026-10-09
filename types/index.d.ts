@@ -79,6 +79,7 @@ export type Job = {
   title?: string
   /** The published artifact, after `/explain publish`. */
   url?: string
+  isUrlStale?: boolean
   /** The local HTML page, after `/explain page`. */
   file?: string
   finishedAt?: number

@@ -1,4 +1,4 @@
-import type { Diagram, Section } from '../types'
+import type { Diagram, Job, Section } from '../types'
 
 // The terminal document: what a builder writes as explainer.json, the checks
 // it must pass, and the pure helpers the pane reads it with.
@@ -148,6 +148,29 @@ export function checkExplainer(text: string): ExplainerCheck {
   }
 
   return problems.length > 0 ? { isValid: false, problems } : { isValid: true, title, sections }
+}
+
+const isSectionRow = (value: unknown): boolean => {
+  const one = (typeof value === 'object' && value !== null ? value : {}) as Partial<Record<keyof Section, unknown>>
+
+  return typeof one.id === 'string' && typeof one.heading === 'string' && typeof one.markdown === 'string'
+}
+
+export function isKeptJob(value: unknown): value is Job {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const one = value as Partial<Record<keyof Job, unknown>>
+
+  return (
+    typeof one.id === 'string' &&
+    (one.origin === 'option' || one.origin === 'button' || one.origin === 'command') &&
+    typeof one.question === 'string' &&
+    one.stage === 'done' &&
+    typeof one.note === 'string' &&
+    typeof one.dir === 'string' &&
+    typeof one.startedAt === 'number' &&
+    Array.isArray(one.sections) &&
+    one.sections.every(isSectionRow)
+  )
 }
 
 /** The sections to narrate: the long ones, with each section's own `narrate` as the override. */

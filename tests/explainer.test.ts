@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { DIAGRAM_MAX_WIDTH, EXPLAINER_LIMIT_CHARS, STEPS_MAX, checkExplainer, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths } from '../hooks/explainer'
+import { DIAGRAM_MAX_WIDTH, EXPLAINER_LIMIT_CHARS, STEPS_MAX, checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths } from '../hooks/explainer'
 import { builderBrief, pageBrief } from '../hooks/prompts'
 import type { Section } from '../types'
 
@@ -113,6 +113,21 @@ describe('what the pane reads from a document', () => {
     expect(pickDiagram(DIAGRAM, { unicodeSafe: true, columns: 60 })).toEqual({ lines: DIAGRAM.unicode, isCut: false })
     expect(pickDiagram(DIAGRAM, { unicodeSafe: false, columns: 60 })).toEqual({ lines: DIAGRAM.ascii, isCut: false })
     expect(pickDiagram(DIAGRAM, { unicodeSafe: true, columns: 20 })).toEqual({ lines: DIAGRAM.ascii, isCut: true })
+  })
+
+  test('a kept job is a finished job with its fields and sections; anything else read from job.json is not', async () => {
+    const job = { id: 'j1', origin: 'command', question: 'q', stage: 'done', note: 'n', dir: '/d', startedAt: 0, sections: [{ id: 'a', heading: 'A', markdown: 'm' }] }
+    expect(isKeptJob(job)).toBe(true)
+    expect(isKeptJob({ ...job, sections: [] })).toBe(true)
+    expect(isKeptJob({ hello: 1 })).toBe(false)
+    expect(isKeptJob(null)).toBe(false)
+    expect(isKeptJob([job])).toBe(false)
+    expect(isKeptJob({ ...job, stage: undefined })).toBe(false)
+    expect(isKeptJob({ ...job, stage: 'building' })).toBe(false)
+    expect(isKeptJob({ ...job, origin: 'elsewhere' })).toBe(false)
+    expect(isKeptJob({ ...job, sections: 'none' })).toBe(false)
+    expect(isKeptJob({ ...job, sections: [{ id: 'a' }] })).toBe(false)
+    expect(isKeptJob({ ...job, startedAt: '0' })).toBe(false)
   })
 
   test('the transcript fallback prints one section whole', async () => {
