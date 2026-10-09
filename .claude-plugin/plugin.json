@@ -1,6 +1,6 @@
 {
   "name": "lucid",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turns a question Claude asks you into an explainer read in a pane of the terminal, with narration; an HTML page and a private artifact on request",
   "author": {
     "name": "Wen Gu"
