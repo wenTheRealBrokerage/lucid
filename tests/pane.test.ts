@@ -180,6 +180,16 @@ describe('the explainer pane', () => {
     }
   })
 
+  test('a table too wide for the pane is handed to Markdown as it was written, escapes and alignment kept', async ($, on) => {
+    const source = '| a | b | c | d | e | f | g |\n| :--- | ---: | --- | --- | --- | --- | --- |\n| 1 | x \\| y | 3 | 4 | 5 | 6 | 7 |'
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, { ...kept(), sections: [{ id: 'wide', heading: 'Wide', markdown: source }] })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PROPS, bodyColumns: 20 } })
+    expect((await ui.findAll({ type: 'Markdown' })).map(one => one.props.text)).toEqual([source])
+    await ui.unmount()
+  })
+
   test('a failed job whose note quotes a control character still draws', async ($, on) => {
     mock.store(on)
     mock.env(on, {})

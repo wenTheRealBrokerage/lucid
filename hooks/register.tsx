@@ -1606,7 +1606,7 @@ export const register: Register = on => {
               if (widths === undefined) {
                 return (
                   <Box key={`block-${i}`} marginTop={1}>
-                    <Markdown text={[`| ${block.header.join(' | ')} |`, `| ${block.header.map(() => '---').join(' | ')} |`, ...block.rows.map(row => `| ${row.join(' | ')} |`)].join('\n')} />
+                    <Markdown text={block.raw.join('\n')} />
                   </Box>
                 )
               }

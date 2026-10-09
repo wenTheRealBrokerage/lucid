@@ -229,21 +229,41 @@ export function sectionText(title: string, sections: readonly Section[], index: 
 }
 
 /** A pipe table lifted out of the markdown, so the pane can draw it at full strength. */
-export type TableBlock = { kind: 'table'; header: string[]; rows: string[][] }
+export type TableBlock = { kind: 'table'; header: string[]; rows: string[][]; raw: string[] }
 export type MarkdownBlock = { kind: 'markdown'; text: string }
 
 const splitRow = (line: string): string[] =>
   line
     .trim()
     .replace(/^\|/, '')
-    .replace(/\|$/, '')
+    .replace(/(?<!\\)\|$/, '')
     .split(/(?<!\\)\|/)
     .map(cell => cell.trim().replace(/\\\|/g, '|'))
 
-const isSeparator = (line: string): boolean => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line)
+const isSeparator = (line: string): boolean => line.includes('|') && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line)
 
-/** Inline markdown reduced to its words: what a table cell is drawn as. */
-export const plainCell = (cell: string): string => cell.replace(/`([^`]*)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+const fenceOf = (line: string): { char: string; length: number; isBare: boolean } | undefined => {
+  const match = /^(`{3,}|~{3,})(.*)$/.exec(line.trim())
+  const run = match?.[1]
+
+  return run === undefined ? undefined : { char: run.charAt(0), length: run.length, isBare: (match?.[2] ?? '').trim() === '' }
+}
+
+const ESCAPED_STAR = '\u0000'
+
+const withoutEmphasis = (text: string): string =>
+  text
+    .replace(/\\\*/g, ESCAPED_STAR)
+    .replace(/(?<![\w*])\*\*(?![\s*])(.+?)(?<![\s*])\*\*(?![\w*])/g, '$1')
+    .replace(/(?<![\w*])\*(?![\s*])(.+?)(?<![\s*])\*(?![\w*])/g, '$1')
+    .replaceAll(ESCAPED_STAR, '*')
+
+/** Inline markdown reduced to its words: what a table cell is drawn as. A code span's content is kept as written. */
+export const plainCell = (cell: string): string =>
+  cell
+    .split(/`([^`]*)`/)
+    .map((part, at) => (at % 2 === 1 ? part : withoutEmphasis(part)))
+    .join('')
 
 /**
  * The markdown split into prose blocks and the pipe tables between them,
@@ -253,7 +273,7 @@ export function splitTables(markdown: string): (MarkdownBlock | TableBlock)[] {
   const lines = markdown.split('\n')
   const blocks: (MarkdownBlock | TableBlock)[] = []
   let prose: string[] = []
-  let inFence = false
+  let fence: { char: string; length: number } | undefined
 
   const flush = () => {
     const text = prose.join('\n').trim()
@@ -263,19 +283,22 @@ export function splitTables(markdown: string): (MarkdownBlock | TableBlock)[] {
 
   for (let at = 0; at < lines.length; at += 1) {
     const line = lines[at] ?? ''
-    if (line.trim().startsWith('```')) inFence = !inFence
+    const mark = fenceOf(line)
+    if (fence === undefined) fence = mark
+    else if (mark !== undefined && mark.isBare && mark.char === fence.char && mark.length >= fence.length) fence = undefined
     const next = lines[at + 1]
-    if (!inFence && line.trim().startsWith('|') && next !== undefined && isSeparator(next)) {
+    const header = splitRow(line)
+    if (fence === undefined && line.trim().startsWith('|') && next !== undefined && isSeparator(next) && splitRow(next).length === header.length) {
       flush()
-      const header = splitRow(line)
       const rows: string[][] = []
+      const from = at
       at += 2
       while (at < lines.length && (lines[at] ?? '').trim().startsWith('|')) {
         rows.push(splitRow(lines[at] ?? ''))
         at += 1
       }
+      blocks.push({ kind: 'table', header, rows, raw: lines.slice(from, at) })
       at -= 1
-      blocks.push({ kind: 'table', header, rows })
       continue
     }
     prose.push(line)
@@ -290,11 +313,10 @@ export function tableWidths(table: TableBlock, columns: number, gap: number): nu
   const count = table.header.length
   const widths = table.header.map((cell, i) => Math.max([...plainCell(cell)].length, ...table.rows.map(row => [...plainCell(row[i] ?? '')].length), 1))
   const room = columns - gap * Math.max(0, count - 1)
-  if (count === 0 || room < count * 3) return undefined
+  if (count === 0 || room < widths.reduce((sum, w) => sum + Math.min(w, 3), 0)) return undefined
 
   while (widths.reduce((sum, w) => sum + w, 0) > room) {
     const widest = widths.indexOf(Math.max(...widths))
-    if ((widths[widest] ?? 0) <= 3) return undefined
     widths[widest] = (widths[widest] ?? 0) - 1
   }
 

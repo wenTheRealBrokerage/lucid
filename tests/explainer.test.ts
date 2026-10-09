@@ -209,10 +209,48 @@ describe('the briefs', () => {
     if (table?.kind !== 'table') throw new Error('expected a table')
     expect(table.header).toEqual(['Option', 'Meaning'])
     expect(table.rows).toEqual([['**Approve**', 'diff `fixes` it'], ['Request changes', 'a | in a cell']])
+    expect(table.raw).toEqual(['| Option | Meaning |', '| --- | --- |', '| **Approve** | diff `fixes` it |', '| Request changes | a \\| in a cell |'])
     expect(plainCell('**Approve** `x`')).toBe('Approve x')
     expect(tableWidths(table, 60, 2)).toEqual([15, 13])
     expect(tableWidths(table, 20, 2)).toEqual([9, 9])
     expect(tableWidths(table, 7, 2)).toBeUndefined()
     expect(blocks[2]?.kind === 'markdown' && blocks[2].text).toContain('| not | a table |')
+  })
+
+  test('a cell keeps asterisks that are not emphasis, and a code span as written', async () => {
+    expect(plainCell('`*args` and `**kwargs`')).toBe('*args and **kwargs')
+    expect(plainCell('`*.ts` and `*.tsx`')).toBe('*.ts and *.tsx')
+    expect(plainCell('2 * 3 * 4')).toBe('2 * 3 * 4')
+    expect(plainCell('2*3*4')).toBe('2*3*4')
+    expect(plainCell('a \\* b \\* c')).toBe('a * b * c')
+    expect(plainCell('**bold** and *it* and `**code**`')).toBe('bold and it and **code**')
+    expect(plainCell('*one* then *two*')).toBe('one then two')
+  })
+
+  test('many narrow columns fit when their own widths fit, whatever three cells each would take', async () => {
+    const header = Array.from({ length: 13 }, (_, at) => `c${at}`)
+    const narrow = { kind: 'table' as const, header, rows: [], raw: [] }
+    expect(tableWidths(narrow, 59, 2)).toEqual(header.map(cell => cell.length))
+    expect(tableWidths(narrow, 49, 2)).toBeUndefined()
+    const wide = { kind: 'table' as const, header: ['a', 'a long header cell'], rows: [], raw: [] }
+    expect(tableWidths(wide, 8, 2)).toEqual([1, 5])
+    expect(tableWidths(wide, 5, 2)).toBeUndefined()
+  })
+
+  test('a table inside a tilde fence or a longer backtick fence stays code', async () => {
+    const table = '| a | b |\n| --- | --- |\n| 1 | 2 |'
+    expect(splitTables(`~~~\n${table}\n~~~`).map(block => block.kind)).toEqual(['markdown'])
+    expect(splitTables('````\n```\n' + table + '\n```\n````').map(block => block.kind)).toEqual(['markdown'])
+    expect(splitTables('```\n~~~\n' + table + '\n```').map(block => block.kind)).toEqual(['markdown'])
+    expect(splitTables('```text\ncode\n```\n\n' + table).map(block => block.kind)).toEqual(['markdown', 'table'])
+  })
+
+  test('a header needs a separator with a pipe and as many cells; a trailing escaped pipe stays in its cell', async () => {
+    expect(splitTables('| a line that starts with a pipe\n---\nthen a rule').map(block => block.kind)).toEqual(['markdown'])
+    expect(splitTables('| a | b |\n| --- |\n| 1 | 2 |').map(block => block.kind)).toEqual(['markdown'])
+    const [escaped] = splitTables('| a | b |\n| --- | --- |\n| x | y \\||')
+    expect(escaped?.kind === 'table' && escaped.rows).toEqual([['x', 'y |']])
+    const [bare] = splitTables('| a | b |\n| --- | --- |\n| x | y \\|')
+    expect(bare?.kind === 'table' && bare.rows).toEqual([['x', 'y |']])
   })
 })

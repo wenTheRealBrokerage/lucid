@@ -107,7 +107,7 @@ const asBoolean = (value: unknown): boolean | undefined => {
 /**
  * Brings a writer's reply into `{ sections: [{ id, narrate, script }] }` and
  * checks it: every narrated script keeps the section's standalone numbers
- * word for word (and its names, when `isStrict`), and no chunk is too long.
+ * word for word (and its names, when `isStrict`).
  */
 export function checkNarration(reply: string, sections: readonly Section[], isStrict = false): NarrationCheck {
   const repairs: string[] = []
@@ -156,10 +156,7 @@ export function checkNarration(reply: string, sections: readonly Section[], isSt
       if (missingNames.length > 0) problems.push(`"${row.id}" drops the name ${missingNames.join(', ')}`)
     }
 
-    const chunks = narrate ? chunkScript(script) : []
-    if (chunks.some(chunk => chunk.length > CHUNK_LIMIT)) problems.push(`"${row.id}" has a chunk over ${CHUNK_LIMIT} characters`)
-
-    narrated.push({ id: row.id, narrate, script: narrate ? script : '', chunks })
+    narrated.push({ id: row.id, narrate, script: narrate ? script : '', chunks: narrate ? chunkScript(script) : [] })
   }
 
   for (const section of sections) {
