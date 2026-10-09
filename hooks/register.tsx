@@ -3,7 +3,22 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Complexity, Effort, Job, Pending, Section, Stage, Usage, View } from '../types'
 
-import { checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, printable, sectionText, splitTables, tableWidths, widthOf } from './explainer'
+import {
+  CARD_INSET,
+  checkExplainer,
+  displayWidth,
+  fitCells,
+  isKeptJob,
+  narratedSections,
+  nextNarrated,
+  pickDiagram,
+  plainCell,
+  printable,
+  sectionText,
+  splitTables,
+  tableWidths,
+  widthOf,
+} from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
@@ -40,6 +55,7 @@ const FRAME_MS = 2500
 /** A rendered clip smaller than this per character of script holds no speech: `say` writes such files where it cannot reach the speech service. */
 const MIN_AUDIO_BYTES_PER_CHAR = 40
 const EMPTY_CLIP_BYTES = 40_000
+const TABLE_CELLS_MAX = 2000
 const WITHHELD =
   'The user chose "Explain this first": they want an explainer before they answer, so this is not an answer. The lucid mod is building it now. Tell them so in one short line and end your turn. When they say they are ready, ask the same question again with the same options.'
 const KEPT = 'lucid read its own subagent report, so it does not start a turn here'
@@ -1390,16 +1406,17 @@ export const register: Register = on => {
     const held = await read($, pending)
     const settings = await loadSettings($)
     const { unicodeSafe } = await probe($)
-    const width = Math.max(20, e.props.bodyColumns)
-    const cells = (text: string) => [...text].length
+    const width = Math.max(1, e.props.bodyColumns)
+    const cells = displayWidth
 
-    // A full-width strip in the accent: the title at the left, a counter at the right.
+    // A full-width strip in the accent: the title at the left, cut to leave a gap, and a counter at the right.
     const strip = (left: string, right: string) => {
-      const room = Math.max(0, width - cells(left) - cells(right) - 2)
+      const fitted = fitCells(left, Math.max(0, width - cells(right) - 3))
+      const room = Math.max(1, width - cells(fitted) - cells(right) - 2)
 
       return (
-        <Text backgroundColor="claude" color="inverseText" bold>
-          {` ${left}${' '.repeat(room)}${right} `}
+        <Text backgroundColor="claude" color="inverseText" bold wrap="truncate-end">
+          {` ${fitted}${' '.repeat(room)}${right} `}
         </Text>
       )
     }
@@ -1420,8 +1437,8 @@ export const register: Register = on => {
           {strip('lucid', 'explainer')}
           <Box flexDirection="column" paddingX={1} paddingY={1}>
             <Text>No explainer in this session yet.</Text>
-            <Text dimColor>When Claude asks a question, pick "Explain this first", or run /explain afterwards.</Text>
-            <Text dimColor>/explain view brings back the last one you built.</Text>
+            <Text color="text">When Claude asks a question, pick "Explain this first", or run /explain afterwards.</Text>
+            <Text color="text">/explain view brings back the last one you built.</Text>
           </Box>
         </Box>
       )
@@ -1440,6 +1457,11 @@ export const register: Register = on => {
     const goSection = (to: number) => update($, view, shown => ({ ...shown, index: clamp(to), step: 0, isToc: false }))
     const stepSection = (by: number) => update($, view, shown => ({ ...shown, index: clamp(clamp(shown.index) + by), step: 0, isToc: false }))
     const lastStep = Math.max(steps.length - 1, 0)
+    const hasFrames = steps.length > 1
+    const canPlay = section?.audio !== undefined && !isPlaying
+    const canStop = seen.playing !== null
+    const hasPage = current.file !== undefined || Boolean(current.url)
+    const digits = Math.min(count, 9)
     const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(Math.min(shown.step, lastStep) + by, 0), lastStep) }))
 
     // A thin reading-progress bar across the whole width, in eighths.
@@ -1468,20 +1490,26 @@ export const register: Register = on => {
           </Text>
         ) : (
           <Box flexDirection="column">
-            <Box columnGap={2}>
-              {STAGES.map((one, i) => (
-                <Box key={`stage-${i}`}>
-                  {i < at && <Text color="success">✓ {one.label}</Text>}
-                  {i === at && (
-                    <Text color="claude" bold>
-                      ◐ {one.label}
-                    </Text>
-                  )}
-                  {i > at && <Text dimColor>○ {one.label}</Text>}
-                </Box>
-              ))}
-            </Box>
-            <Text dimColor>
+            {at < 0 ? (
+              <Text color="claude" bold>
+                ◐ {current.stage === 'publishing' ? 'publishing' : 'building the page'}
+              </Text>
+            ) : (
+              <Box key="stages" columnGap={2} flexWrap="wrap">
+                {STAGES.map((one, i) => (
+                  <Box key={`stage-${i}`} flexShrink={0}>
+                    {i < at && <Text color="success">✓ {one.label}</Text>}
+                    {i === at && (
+                      <Text color="claude" bold>
+                        ◐ {one.label}
+                      </Text>
+                    )}
+                    {i > at && <Text dimColor>○ {one.label}</Text>}
+                  </Box>
+                ))}
+              </Box>
+            )}
+            <Text color="text">
               {printable(current.note)}
               {current.model === undefined ? '' : ` · ${current.model}, ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`}
             </Text>
@@ -1522,9 +1550,13 @@ export const register: Register = on => {
       section?.diagram === undefined
         ? undefined
         : (() => {
-            const picked = pickDiagram(section.diagram, { unicodeSafe, columns: Math.max(1, width - 4) })
+            const picked = pickDiagram(section.diagram, { unicodeSafe, columns: Math.max(1, width - CARD_INSET) })
             const drawn = picked.lines.join('\n')
-            const cut = picked.isCut && <Text dimColor>diagram is {widthOf(picked.lines)} columns wide; ctrl+x then ← widens the pane</Text>
+            const cut = picked.isCut && (
+              <Text color="text">
+                {`diagram is ${widthOf(picked.lines)} columns wide${e.props.placement === 'dock' && e.props.isFocused ? '; ctrl+x then ← widens the pane' : ''}`}
+              </Text>
+            )
 
             return Code === undefined ? (
               <Box flexDirection="column" marginTop={1}>
@@ -1542,16 +1574,14 @@ export const register: Register = on => {
           })()
 
     // Frames: a timeline of dots, the revealed frames under it, the current one marked.
-    const timeline = steps.map((_, i) => (i < step ? '●' : i === step ? '◉' : '○')).join('━')
+    const dots = steps.map((_, i) => (i < step ? '●' : i === step ? '◉' : '○'))
+    const counter = `  ${step + 1}/${steps.length}${seen.isAuto ? ' · auto' : ''}`
+    const timeline = [dots.join('━'), dots.join('')].find(drawn => cells(drawn) + cells(counter) <= width - 2) ?? '◉'
     const frames = steps.length > 0 && (
       <Box flexDirection="column" marginTop={1}>
         <Text>
           <Text color="claude">{timeline}</Text>
-          <Text dimColor>
-            {'  '}
-            {step + 1}/{steps.length}
-            {seen.isAuto ? ' · auto' : ''}
-          </Text>
+          <Text dimColor>{counter}</Text>
         </Text>
         {steps.slice(0, step + 1).map((line, i) => (
           <Box key={`step-${i}`} paddingLeft={1}>
@@ -1570,6 +1600,9 @@ export const register: Register = on => {
         ))}
       </Box>
     )
+
+    const blocks = section === undefined ? [] : splitTables(section.markdown)
+    const tableCells = blocks.reduce((sum, block) => sum + (block.kind === 'table' ? (block.rows.length + 1) * block.header.length : 0), 0)
 
     const body = seen.isToc ? (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
@@ -1594,7 +1627,7 @@ export const register: Register = on => {
         <Text color="claude" bold>
           {section.heading}
         </Text>
-        {splitTables(section.markdown).map((block, i) =>
+        {blocks.map((block, i) =>
           block.kind === 'markdown' ? (
             <Box key={`block-${i}`} marginTop={1}>
               <Markdown text={block.text} />
@@ -1602,7 +1635,7 @@ export const register: Register = on => {
           ) : (
             (() => {
               // The engine draws table cells dim; lucid draws its own at full strength, the header in the accent.
-              const widths = tableWidths(block, Math.max(1, width - 4), 2)
+              const widths = tableCells > TABLE_CELLS_MAX ? undefined : tableWidths(block, Math.max(1, width - CARD_INSET), 2)
               if (widths === undefined) {
                 return (
                   <Box key={`block-${i}`} marginTop={1}>
@@ -1666,9 +1699,9 @@ export const register: Register = on => {
         <Box columnGap={1} paddingX={1} flexWrap="wrap">
           {count > 1 && <Button key="prev" label="◀ Prev" hotkey="p" onPress={() => stepSection(-1)} />}
           {count > 1 && <Button key="next" label="Next ▶" hotkey="n" variant="primary" onPress={() => stepSection(1)} />}
-          {steps.length > 1 && <Button key="frame-back" label="‹ Frame" hotkey="b" onPress={() => goStep(-1)} />}
-          {steps.length > 1 && <Button key="frame" label="Frame ›" hotkey="f" onPress={() => goStep(1)} />}
-          {steps.length > 1 && settings.shouldAnimate && (
+          {hasFrames && <Button key="frame-back" label="‹ Frame" hotkey="b" onPress={() => goStep(-1)} />}
+          {hasFrames && <Button key="frame" label="Frame ›" hotkey="f" onPress={() => goStep(1)} />}
+          {hasFrames && settings.shouldAnimate && (
             <Button
               key="auto"
               label={seen.isAuto ? '⟳ Pause' : '⟳ Auto'}
@@ -1680,7 +1713,7 @@ export const register: Register = on => {
               }}
             />
           )}
-          {section?.audio !== undefined && !isPlaying && (
+          {canPlay && section !== undefined && (
             <Button
               key="play"
               label="▶ Play"
@@ -1690,7 +1723,7 @@ export const register: Register = on => {
               }}
             />
           )}
-          {seen.playing !== null && (
+          {canStop && (
             <Button
               key="stop"
               label="■ Stop"
@@ -1702,7 +1735,7 @@ export const register: Register = on => {
             />
           )}
           {count > 0 && <Button key="toc" label={seen.isToc ? '≡ Close' : '≡ Contents'} hotkey="t" onPress={() => update($, view, shown => ({ ...shown, isToc: !shown.isToc }))} />}
-          {(current.file !== undefined || Boolean(current.url)) && (
+          {hasPage && (
             <Button
               key="open"
               label="⤴ Page"
@@ -1726,10 +1759,10 @@ export const register: Register = on => {
         {keysLine(
           [
             count > 1 ? 'p n' : '',
-            count > 0 ? 't 1-9' : '',
-            steps.length > 1 ? (settings.shouldAnimate ? 'f b g' : 'f b') : '',
-            section?.audio !== undefined ? 'l s' : '',
-            current.file !== undefined || Boolean(current.url) ? 'o' : '',
+            count === 0 ? '' : !seen.isToc ? 't' : digits > 1 ? `t 1-${digits}` : 't 1',
+            hasFrames ? (settings.shouldAnimate ? 'f b g' : 'f b') : '',
+            [canPlay ? 'l' : '', canStop ? 's' : ''].filter(Boolean).join(' '),
+            hasPage ? 'o' : '',
             canAskAgain ? 'a' : '',
           ]
             .filter(Boolean)

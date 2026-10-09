@@ -1,6 +1,23 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { DIAGRAM_MAX_WIDTH, EXPLAINER_LIMIT_CHARS, STEPS_MAX, checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths } from '../hooks/explainer'
+import {
+  CARD_INSET,
+  DIAGRAM_MAX_WIDTH,
+  EXPLAINER_LIMIT_CHARS,
+  STEPS_MAX,
+  checkExplainer,
+  displayWidth,
+  fitCells,
+  isKeptJob,
+  narratedSections,
+  nextNarrated,
+  pickDiagram,
+  plainCell,
+  sectionText,
+  splitTables,
+  tableWidths,
+  widthOf,
+} from '../hooks/explainer'
 import { builderBrief, pageBrief } from '../hooks/prompts'
 import type { Section } from '../types'
 
@@ -88,6 +105,23 @@ describe('checks on a built explainer', () => {
     expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌──┐'] }))).toEqual([])
   })
 
+  test('the box-drawing twin takes printable ASCII, box drawing and the four arrows, and nothing wider', async () => {
+    const withTwin = (line: string) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram: { ascii: ['+--+'], unicode: [line] } }] })))
+    expect(withTwin('┌─┐ a ──> b ← ↑ → ↓ ┼')).toEqual([])
+    expect(withTwin('┌\u{1f642}┐')).toEqual(['section "the-table": diagram.unicode line 1 has "\u{1f642}" (U+1F642); unicode takes printable ASCII, box drawing and the arrows ← ↑ → ↓ only'])
+    expect(withTwin('a ▶ b')[0]).toContain('(U+25B6)')
+    expect(withTwin('日本')[0]).toContain('(U+65E5)')
+    expect(withTwin('a\u0007b')[0]).toContain('(U+0007)')
+  })
+
+  test('the limit is the measured body less the card inset', async () => {
+    expect(CARD_INSET).toBe(6)
+    expect(DIAGRAM_MAX_WIDTH).toBe(57)
+    const widest = { ascii: ['-'.repeat(DIAGRAM_MAX_WIDTH)], maxWidth: DIAGRAM_MAX_WIDTH }
+    expect(pickDiagram(widest, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(false)
+    expect(pickDiagram({ ascii: ['-'.repeat(58)], maxWidth: 58 }, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(true)
+  })
+
   test('a diagram is judged against the limit, not against a width the builder declares, and keeps the width measured', async () => {
     const withDiagram = (diagram: unknown) => checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram }] })))
     for (const maxWidth of [4, DIAGRAM_MAX_WIDTH + 1, 'wide', undefined]) {
@@ -129,6 +163,34 @@ describe('checks on a built explainer', () => {
     expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a\u00a0b' }] })))).toEqual([])
     const huge = text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'x'.repeat(EXPLAINER_LIMIT_CHARS) }] }))
     expect(problemsOf(huge)[0]).toContain(`the limit is ${EXPLAINER_LIMIT_CHARS}`)
+  })
+})
+
+describe('widths in terminal cells', () => {
+  test('CJK and emoji take two cells, combining marks and joiners none, box drawing and the rest one', async () => {
+    expect(displayWidth('abc')).toBe(3)
+    expect(displayWidth('日本語')).toBe(6)
+    expect(displayWidth('한글 ｆｕｌｌ')).toBe(13)
+    expect(displayWidth('\u{1f44d}')).toBe(2)
+    expect(displayWidth('✅ ok')).toBe(5)
+    expect(displayWidth('☀\ufe0f')).toBe(2)
+    expect(displayWidth('e\u0301')).toBe(1)
+    expect(displayWidth('a\u200db')).toBe(2)
+    expect(displayWidth('┌─┐│▸●◉━✓→')).toBe(10)
+  })
+
+  test('a text is cut to a number of cells with an ellipsis, never past it', async () => {
+    expect(fitCells('hello', 10)).toBe('hello')
+    expect(fitCells('hello world', 8)).toBe('hello w…')
+    expect(fitCells('日本語の本', 6)).toBe('日本…')
+    expect(fitCells('abc', 1)).toBe('…')
+    expect(fitCells('abc', 0)).toBe('')
+    for (const columns of [1, 2, 3, 7, 12]) expect(displayWidth(fitCells('日本語 and more text', columns))).toBeLessThanOrEqual(columns)
+  })
+
+  test('a diagram and a table are measured in cells', async () => {
+    expect(widthOf(['ab', '日本語'])).toBe(6)
+    expect(tableWidths({ kind: 'table', header: ['名前', '値'], rows: [['日本語', '1']], raw: [] }, 60, 2)).toEqual([6, 2])
   })
 })
 

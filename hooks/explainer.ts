@@ -3,8 +3,9 @@ import type { Diagram, Job, Section } from '../types'
 // The terminal document: what a builder writes as explainer.json, the checks
 // it must pass, and the pure helpers the pane reads it with.
 
-/** Widest diagram line allowed: a docked pane at 80 columns has 63 body columns, less the card's frame. */
-export const DIAGRAM_MAX_WIDTH = 60
+export const CARD_INSET = 6
+/** Widest diagram line allowed: the one body width measured so far (63 columns, in Warp at 80) less the section's padding and the card's border and padding. */
+export const DIAGRAM_MAX_WIDTH = 63 - CARD_INSET
 /** The whole document, as JSON: well under the 100,000 characters one drawing holds. */
 export const EXPLAINER_LIMIT_CHARS = 90_000
 export const TITLE_MAX_CHARS = 80
@@ -12,6 +13,63 @@ export const TAKEAWAY_MAX_CHARS = 240
 export const STEPS_MAX = 24
 
 const ASCII_LINE = /^[A-Za-z0-9 +\-|<>^v.,:;()'"_=*#/\\[\]{}!?%&@~`$]*$/
+const UNICODE_LINE = /^[\u0020-\u007e\u2500-\u257f\u2190-\u2193]*$/
+
+const WIDE_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  hangulJamo: [0x1100, 0x115f],
+  cjkRadicalsToSymbols: [0x2e80, 0x303e],
+  kanaToCjkCompatibility: [0x3041, 0x33ff],
+  cjkExtensionA: [0x3400, 0x4dbf],
+  cjkUnified: [0x4e00, 0x9fff],
+  yi: [0xa000, 0xa4cf],
+  hangulSyllables: [0xac00, 0xd7a3],
+  cjkCompatibilityIdeographs: [0xf900, 0xfaff],
+  cjkCompatibilityForms: [0xfe30, 0xfe4f],
+  fullwidthForms: [0xff00, 0xff60],
+  fullwidthSigns: [0xffe0, 0xffe6],
+  emojiPictographs: [0x1f300, 0x1f64f],
+  emojiTransport: [0x1f680, 0x1f6ff],
+  emojiSupplemental: [0x1f900, 0x1f9ff],
+  emojiExtended: [0x1fa70, 0x1faff],
+  cjkExtensionBOnward: [0x20000, 0x3fffd],
+}
+const WIDE_SYMBOLS = new Set('⌚⌛⏩⏪⏫⏬⏰⏳◽◾☔☕♈♉♊♋♌♍♎♏♐♑♒♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓❔❕❗➕➖➗➰➿⬛⬜⭐⭕')
+const ZERO_WIDTH_RANGES: Readonly<Record<string, readonly [number, number]>> = {
+  combiningDiacriticals: [0x0300, 0x036f],
+  combiningExtended: [0x1ab0, 0x1aff],
+  combiningSupplement: [0x1dc0, 0x1dff],
+  zeroWidthSpaceToJoiner: [0x200b, 0x200d],
+  combiningForSymbols: [0x20d0, 0x20ff],
+  variationSelectors: [0xfe00, 0xfe0f],
+  combiningHalfMarks: [0xfe20, 0xfe2f],
+}
+const EMOJI_PRESENTATION = '\ufe0f'
+
+const isIn = (code: number, ranges: Readonly<Record<string, readonly [number, number]>>): boolean =>
+  Object.values(ranges).some(([from, to]) => code >= from && code <= to)
+
+export function displayWidth(text: string): number {
+  const chars = [...text]
+
+  return chars.reduce((width, char, at) => {
+    const code = char.codePointAt(0) ?? 0
+    if (isIn(code, ZERO_WIDTH_RANGES)) return width
+
+    return width + (isIn(code, WIDE_RANGES) || WIDE_SYMBOLS.has(char) || chars[at + 1] === EMOJI_PRESENTATION ? 2 : 1)
+  }, 0)
+}
+
+export function fitCells(text: string, columns: number): string {
+  if (displayWidth(text) <= columns) return text
+  if (columns < 1) return ''
+  let kept = ''
+  for (const char of text) {
+    if (displayWidth(kept + char) > columns - 1) break
+    kept += char
+  }
+
+  return `${kept}…`
+}
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/
 /** Control characters other than tab and newline: the engine draws none of them (D:5709). */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
@@ -73,9 +131,12 @@ function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram 
     } else {
       unicode = one.unicode
       for (const [row, line] of unicode.entries()) {
+        const odd = [...line].find(char => !UNICODE_LINE.test(char))
         if (line.includes('\t')) problems.push(`${where}: diagram.unicode line ${row + 1} has a tab`)
-        if (CONTROL.test(line)) problems.push(`${where}: diagram.unicode line ${row + 1} has a control character`)
-        if ([...line].length > DIAGRAM_MAX_WIDTH) problems.push(`${where}: diagram.unicode line ${row + 1} is ${[...line].length} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`)
+        else if (odd !== undefined) {
+          problems.push(`${where}: diagram.unicode line ${row + 1} has "${printable(odd)}" (${codePoint(odd)}); unicode takes printable ASCII, box drawing and the arrows ← ↑ → ↓ only`)
+        }
+        if (displayWidth(line) > DIAGRAM_MAX_WIDTH) problems.push(`${where}: diagram.unicode line ${row + 1} is ${displayWidth(line)} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`)
       }
     }
   }
@@ -204,7 +265,7 @@ export function nextNarrated(sections: readonly Section[], from: number): number
 }
 
 /** The widest line of a diagram, in cells. */
-export const widthOf = (lines: readonly string[]): number => lines.reduce((widest, line) => Math.max(widest, [...line].length), 0)
+export const widthOf = (lines: readonly string[]): number => lines.reduce((widest, line) => Math.max(widest, displayWidth(line)), 0)
 
 /**
  * The lines the pane draws for a diagram: the box-drawing twin where the
@@ -311,7 +372,7 @@ export function splitTables(markdown: string): (MarkdownBlock | TableBlock)[] {
 /** Column widths for a table drawn in `columns` cells with `gap` between columns, shrinking the widest columns first; undefined when it cannot fit. */
 export function tableWidths(table: TableBlock, columns: number, gap: number): number[] | undefined {
   const count = table.header.length
-  const widths = table.header.map((cell, i) => Math.max([...plainCell(cell)].length, ...table.rows.map(row => [...plainCell(row[i] ?? '')].length), 1))
+  const widths = table.header.map((cell, i) => Math.max(displayWidth(plainCell(cell)), ...table.rows.map(row => displayWidth(plainCell(row[i] ?? ''))), 1))
   const room = columns - gap * Math.max(0, count - 1)
   if (count === 0 || room < widths.reduce((sum, w) => sum + Math.min(w, 3), 0)) return undefined
 

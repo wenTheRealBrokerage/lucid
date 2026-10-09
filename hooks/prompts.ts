@@ -30,7 +30,7 @@ export function builderBrief(input: { question: string; context: string; dir: st
       `Write exactly one file: ${input.dir}/explainer.json`,
       '{"title": "...", "sections": [{"id": "kebab-id", "heading": "...", "markdown": "...",',
       '  "diagram": {"ascii": ["..."], "unicode": ["..."]}, "steps": ["..."], "narrate": true, "takeaway": "..."}]}',
-      `diagram, steps, narrate and takeaway are optional: leave an unused one out, never write null. A diagram line is at most ${DIAGRAM_MAX_WIDTH} characters wide. Your system prompt has the rules.`,
+      `diagram, steps, narrate and takeaway are optional: leave an unused one out, never write null. A diagram line is at most ${DIAGRAM_MAX_WIDTH} columns wide. Your system prompt has the rules.`,
       '',
       'Then reply with the single word DONE, or FAILED: and the reason. Write no other file.',
       '',

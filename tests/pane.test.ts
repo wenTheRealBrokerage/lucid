@@ -2,7 +2,8 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { On } from 'claude-code'
 
-import type { Job } from '../types'
+import { displayWidth } from '../hooks/explainer'
+import type { Job, Section } from '../types'
 
 // The pane through the testing kit: the trees lucid returns for a finished
 // explainer on each surface, and what its hotkey Buttons do. The kit never
@@ -180,6 +181,132 @@ describe('the explainer pane', () => {
     }
   })
 
+  const withSections = (sections: Section[], change: Partial<Job> = {}): Job => ({ ...kept(), sections, ...change })
+  const wide = (columns: number): Section => ({ id: 'wide', heading: 'Wide', markdown: 'A drawing.', diagram: { ascii: ['-'.repeat(columns)], maxWidth: columns } })
+
+  test('a diagram is cut from the width the card really leaves, six columns less than the body', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, withSections([wide(58)]))
+    const cut = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    expect(await textOf(cut)).toContain('diagram is 58 columns wide; ctrl+x then ← widens the pane')
+    await cut.unmount()
+    const fits = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PROPS, bodyColumns: 64 } })
+    expect(await textOf(fits)).not.toContain('columns wide')
+    await fits.unmount()
+  })
+
+  test('the widen hint names the chord only for a docked pane that holds the keys', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, withSections([wide(58)]))
+    for (const props of [{ ...PROPS, placement: 'inline' as const }, { ...PROPS, isFocused: false }]) {
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props })
+      const text = await textOf(ui)
+      expect(text).toContain('diagram is 58 columns wide')
+      expect(text).not.toContain('widens the pane')
+      await ui.unmount()
+    }
+  })
+
+  test('a page build or a publish shows one line for itself, not the five build stages as not done', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, { ...kept(), stage: 'paging', note: 'a builder is writing the page' })
+    const paging = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    const text = await textOf(paging)
+    expect(text).toContain('◐ building the page')
+    expect(text).not.toContain('○ voicing')
+    expect(await paging.find({ key: 'stages' })).toBeUndefined()
+    expect((await paging.find({ type: 'Text', text: /^a builder is writing the page/ }))?.props.color).toBe('text')
+    await paging.unmount()
+  })
+
+  test('the build stages wrap whole when the pane is narrow, and the note under them is drawn at full strength', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, { ...kept(), stage: 'building', sections: [], note: 'the builder is writing the explainer' })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PROPS, bodyColumns: 30 } })
+    expect((await ui.find({ key: 'stages' }))?.props.flexWrap).toBe('wrap')
+    expect((await ui.find({ key: 'stage-4' }))?.props.flexShrink).toBe(0)
+    const note = await ui.find({ type: 'Text', text: /^the builder is writing the explainer/ })
+    expect(note?.props.color).toBe('text')
+    expect(note?.props.dimColor).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the frame timeline drops its joiners, then its dots, as the pane narrows', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, withSections([{ id: 'long', heading: 'Long', markdown: 'Steps.', steps: Array.from({ length: 24 }, (_, at) => `step ${at + 1}`) }]))
+    const joined = `◉${'━○'.repeat(23)}`
+    for (const [bodyColumns, drawn] of [[63, joined], [40, `◉${'○'.repeat(23)}`], [20, '◉']] as const) {
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PROPS, bodyColumns } })
+      expect((await ui.find({ type: 'Text', text: /1\/24$/ }))?.text).toBe(`${drawn}  1/24`)
+      await ui.unmount()
+    }
+  })
+
+  test('the title strip is exactly the body wide: a long or a wide-character title is cut, never glued to the counter', async ($, on) => {
+    let title = ''
+    mock.store(on)
+    mock.env(on, {})
+    on('state.get', { plugin: 'lucid', key: 'job' }, () => ({ value: { value: { ...kept(), title }, version: 1 } }))
+    const stripOf = async (): Promise<string> => {
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+      const strip = (await ui.find({ type: 'Text', text: / 1 \/ 3 $/ }))?.text ?? ''
+      await ui.unmount()
+
+      return strip
+    }
+    for (const long of ['A title that runs to the eighty characters the check allows, and so past the pane', '楽観的ロックと悲観的ロックのどちらを台帳に使うべきかを決めるための説明です']) {
+      title = long
+      const strip = await stripOf()
+      expect(displayWidth(strip)).toBe(63)
+      expect(strip).toContain('… ')
+      expect(strip.endsWith(' 1 / 3 ')).toBe(true)
+    }
+    title = 'Short'
+    expect(await stripOf()).toBe(` Short${' '.repeat(51)}1 / 3 `)
+  })
+
+  test('wide-character headings are measured in cells when choosing the tab row', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, withSections(['一', '二', '三'].map((mark, at) => ({ id: `s${at}`, heading: `${mark}番目の見出しですよ長い`, markdown: 'm' }))))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    expect(await ui.find({ key: 'tab-1' })).toBeUndefined()
+    expect(await textOf(ui)).toContain(' of 3 · ')
+    await ui.unmount()
+  })
+
+  test('the keys line names a key only while its Button is drawn', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, kept())
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    expect((await ui.find({ type: 'Text', text: /^p n/ }))?.text).toBe('p n · t · l')
+    await ui.press({ key: 'toc' })
+    expect((await ui.find({ type: 'Text', text: /^p n/ }))?.text).toBe('p n · t 1-3 · l')
+    await ui.press({ key: 'toc' })
+    await ui.press({ key: 'next' })
+    expect((await ui.find({ type: 'Text', text: /^p n/ }))?.text).toBe('p n · t · f b g')
+    expect(await ui.find({ key: 'play' })).toBeUndefined()
+    expect(await ui.find({ key: 'stop' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a table with more cells than the pane can hold as elements is handed to Markdown', async ($, on) => {
+    const table = ['| a | b | c | d |', '| --- | --- | --- | --- |', ...Array.from({ length: 600 }, (_, at) => `| ${at} | x | y | z |`)].join('\n')
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, withSections([{ id: 'big', heading: 'Big', markdown: table }]))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    expect((await ui.findAll({ type: 'Markdown' })).map(one => one.props.text)).toEqual([table])
+    expect(await ui.find({ type: 'Text', text: /^599$/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
   test('a table too wide for the pane is handed to Markdown as it was written, escapes and alignment kept', async ($, on) => {
     const source = '| a | b | c | d | e | f | g |\n| :--- | ---: | --- | --- | --- | --- | --- |\n| 1 | x \\| y | 3 | 4 | 5 | 6 | 7 |'
     mock.store(on)
@@ -205,6 +332,7 @@ describe('the explainer pane', () => {
     seedJob(on, null)
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
     expect(await textOf(ui)).toContain('No explainer in this session yet.')
+    expect((await ui.find({ type: 'Text', text: /^\/explain view brings back/ }))?.props.color).toBe('text')
     await ui.unmount()
   })
 })

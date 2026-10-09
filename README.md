@@ -66,7 +66,7 @@ Choosing the option withholds the answer from Claude, which waits. lucid rates t
 
 ### The pane
 
-The pane opens when you ask for an explainer and seats beside the transcript in a fullscreen terminal from 110 columns, else above the prompt. Focus it with `ctrl+x` then `tab` (or click), and the keys below act. `Esc` hands the keys back. `ctrl+x` then an arrow resizes it; `ctrl+x` then `x` closes it.
+The pane opens when you ask for an explainer and seats beside the transcript in a fullscreen terminal from 110 columns, else above the prompt. Focus it with `ctrl+x` then `tab` (or click), and the keys below act. `Esc` hands the keys back. `ctrl+x` then `←` or `→` widens or narrows a docked pane four columns at a time, up to a cap and only while the pane holds the keys (seen in tmux on Claude Code 2.1.296; the mod API's types do not document the chord). `ctrl+x` then `x` closes it.
 
 | Key | Does |
 | --- | --- |
@@ -92,7 +92,7 @@ The builder writes one file, `explainer.json`, which lucid checks before it narr
 ```
 
 - `markdown`: prose, lists, tables and fenced code; no raw HTML. Tab and newline are the only control characters the engine draws.
-- `diagram`: optional. `ascii` is required and is printable ASCII only (`+ - | < > ^ v`, unaccented letters, digits and ASCII punctuation); `unicode` is an optional box-drawing twin; no tabs in either; every line at most 60 characters wide. lucid measures the width itself and ignores a `maxWidth` the builder writes. A docked pane at 80 columns has 63 body columns, and the diagram card takes four of them.
+- `diagram`: optional. `ascii` is required and is printable ASCII only (`+ - | < > ^ v`, unaccented letters, digits and ASCII punctuation); `unicode` is an optional twin that takes only printable ASCII, box-drawing characters and the arrows `← ↑ → ↓`; no tabs in either; every line at most 57 columns wide. lucid measures the width itself and ignores a `maxWidth` the builder writes. The 57 is 63 less 6. 63 is the narrowest body width measured so far, in Warp at 80 columns (the pane's placement was not recorded); tmux gave 76 with the pane above the prompt at 80 columns and 95 with it docked at 120. The six are the section's padding and the card's border and padding, painted on 2026-10-09 in tmux on Claude Code 2.1.296: in a 76-column body a 70-column line was drawn whole in the card and a 71-column line was cut, and the same held at 95.
 - `steps`: optional frames, at most 24, revealed one at a time.
 - `narrate`: optional. By default sections of 600 characters or more are narrated; `true` or `false` overrides that for one section.
 - `takeaway`: optional, one sentence of at most 240 characters, set apart under the section.
@@ -112,7 +112,7 @@ lucid reads `TERMINAL_EMULATOR`, `TERM_PROGRAM`, `TERM`, `COLORTERM`, `TMUX` and
 | inside tmux | ASCII | the outer emulator's variables do not pass through |
 | anything else | ASCII | |
 
-Colour in the pane comes from theme keys (`claude`, `success`, `error`, `warning`, `inverseText`), so it follows the light or dark theme you picked. Dim text is kept for the keys line and future pipeline stages only, because some palettes draw it near-invisible. No truecolor is assumed. Nothing relies on kitty graphics or on the mouse; clicks work where the terminal reports them.
+Colour in the pane comes from theme keys (`text`, `claude`, `success`, `error`, `warning`, `inverseText`), so it follows the light or dark theme you picked. Some palettes draw dim text near-invisible, so everything that carries information is drawn in `text` or the accent. Dim is kept for chrome: the keys line and its focus hint, pipeline stages not yet reached, the unread part of the progress bar, the contents label, the frame counter, the placeholder of a section still being built, and the rules and borders of cards. No truecolor is assumed. Nothing relies on kitty graphics or on the mouse; clicks work where the terminal reports them.
 
 ## Verified terminals
 
@@ -125,17 +125,18 @@ Run the checklist in each terminal and fill a row. Every cell starts **UNVERIFIE
 5. Play voices a clip and auto-advances to the next narrated section (macOS only).
 6. Frame step works, and auto-advance stops with `/explain set animate off`.
 7. No artifact exists after a build; `/explain page` writes a local HTML file; `/explain publish` asks once, then publishes.
+8. With the pane docked and holding the keys, `ctrl+x` then `←` widens it, and a diagram cut at the narrower width is then drawn whole.
 
-| Terminal | Version | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Warp | 2026-10 build, Claude Code 2.1.295 | PASS (dock at 110+, inline on the main screen; 80 columns gives a 63-column body) | PASS for `ctrl+x tab` and the hotkeys in the Phase 0 spike; the lucid keys UNVERIFIED | PASS (table and box-drawing fence in the spike) | PASS (arrows scrolled a 3,000-character section) | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| IntelliJ terminal (Reworked 2025) | 2026-10 build | PASS (pane seated and drew a full explainer) | UNVERIFIED | PASS for a table (borders intact); a diagram UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| IntelliJ terminal (Classic) | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| iTerm2 | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| Terminal.app | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| VS Code terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| tmux | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
-| Windows Terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| Terminal | Version | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Warp | 2026-10 build, Claude Code 2.1.295 | PASS (dock at 110+, inline on the main screen; 80 columns gives a 63-column body) | PASS for `ctrl+x tab` and the hotkeys in the Phase 0 spike; the lucid keys UNVERIFIED | PASS (table and box-drawing fence in the spike) | PASS (arrows scrolled a 3,000-character section) | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| IntelliJ terminal (Reworked 2025) | 2026-10 build | PASS (pane seated and drew a full explainer) | UNVERIFIED | PASS for a table (borders intact); a diagram UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| IntelliJ terminal (Classic) | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| iTerm2 | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| Terminal.app | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| VS Code terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| tmux | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| Windows Terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 
 In IntelliJ, start `claude` from a terminal tab, not the plugin icon, which has been reported to give an 80x24 PTY. Older IDEs need "Move focus to the editor with Escape" unchecked for `Esc` to reach the app.
 
