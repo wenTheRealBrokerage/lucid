@@ -65,6 +65,7 @@ export type Usage = { input: number; output: number; cacheRead: number; cacheWri
 export type Job = {
   id: string
   origin: 'option' | 'button' | 'command'
+  dialogId?: string
   question: string
   stage: Stage
   note: string

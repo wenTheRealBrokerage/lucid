@@ -76,7 +76,7 @@ The pane opens when you ask for an explainer and seats beside the transcript in 
 | `g` | auto-advance the frames, one every 2.5 seconds; `g` again pauses. Off entirely with `/explain set animate off` |
 | `l` `s` | play the section's narration, stop it. When a clip ends, the next narrated section plays |
 | `o` | open the HTML page, shown only after `/explain page` |
-| `a` | ask Claude to put the question again, after an explainer built from the dialog |
+| `a` | ask Claude to put the question again, after an explainer built from the dialog and while that question is still the last one Claude asked |
 
 The hotkeys are the engine's: one digit or lowercase letter each, and they reach the pane only while it holds the keyboard. A dim line in the pane says so when it does not.
 

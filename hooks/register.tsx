@@ -43,6 +43,10 @@ const EMPTY_CLIP_BYTES = 40_000
 const WITHHELD =
   'The user chose "Explain this first": they want an explainer before they answer, so this is not an answer. The lucid mod is building it now. Tell them so in one short line and end your turn. When they say they are ready, ask the same question again with the same options.'
 const KEPT = 'lucid read its own subagent report, so it does not start a turn here'
+const USAGE = '[view | status | stop | cancel | revoice | page | open | publish | tts | set | about <text>]'
+
+const notStarted = (reason: string): string =>
+  `The user chose "Explain this first", but the lucid mod did not start an explainer for this question (${reason}), so this is not an answer. Tell them so in one short line and end your turn. When they say they are ready, ask the same question again with the same options.`
 
 const pending = atom({ plugin: 'lucid', key: 'pending' } as const, null)
 const job = atom({ plugin: 'lucid', key: 'job' } as const, null)
@@ -70,6 +74,10 @@ type Settings = {
 }
 
 type Finished = { answer: string; reason: string; durationMs: number; usage?: Usage }
+
+type Asked = { origin: Job['origin']; question: string; isDialogOpen: boolean; dialogId?: string }
+
+type Start = { kind: 'started' | 'same-question' | 'refused'; text: string }
 
 type AgentKind = 'explainer' | 'explainer-page' | 'narration-writer'
 
@@ -748,13 +756,24 @@ async function revoice($: EngineInterface): Promise<void> {
 }
 
 /** The whole job, start to finish. Runs off any hook's dispatch: started from a timer, the pane already open. */
-async function runJob($: EngineInterface, origin: Job['origin'], question: string, isDialogOpen: boolean): Promise<void> {
+async function runJob($: EngineInterface, asked: Asked): Promise<void> {
+  const { origin, question, isDialogOpen, dialogId } = asked
   const now = await $.clock.now()
   const id = `j${now.toString(36)}`
   const dir = `${await dataDir($)}/jobs/${id}`
   const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}`
 
-  const fresh: Job = { id, origin, question, dir, stage: 'classifying', note: 'rating the question', startedAt: now, sections: [] }
+  const fresh: Job = {
+    id,
+    origin,
+    question,
+    dir,
+    stage: 'classifying',
+    note: 'rating the question',
+    startedAt: now,
+    sections: [],
+    ...(dialogId === undefined ? {} : { dialogId }),
+  }
   await update($, job, () => fresh)
   await update($, view, () => FRESH_VIEW)
 
@@ -891,19 +910,24 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
 }
 
 /** Starts a job off the calling dispatch. Says why not when one cannot start. */
-async function startJob($: EngineInterface, origin: Job['origin'], question: string, isDialogOpen: boolean): Promise<string> {
-  if (!(await isInteractive($))) return 'explainers need an interactive session'
-  if (isLive(await read($, job))) return 'an explainer is already being built; /explain status shows where it is'
-  if (question.trim() === '') return 'there is no question to explain yet. Run /explain after Claude asks one, or /explain about <text>.'
+async function startJob($: EngineInterface, asked: Asked): Promise<Start> {
+  if (!(await isInteractive($))) return { kind: 'refused', text: 'explainers need an interactive session' }
+  const current = await read($, job)
+  if (isLive(current)) {
+    return { kind: current.question === asked.question ? 'same-question' : 'refused', text: 'an explainer is already being built; /explain status shows where it is' }
+  }
+  if (asked.question.trim() === '') {
+    return { kind: 'refused', text: 'there is no question to explain yet. Run /explain after Claude asks one, or /explain about <text>.' }
+  }
 
   // Opened here, inside the command or the press that asked, so it seats at any width; the build itself runs off this dispatch.
   stopAuto()
-  await openPane($, !isDialogOpen)
+  await openPane($, !asked.isDialogOpen)
   $.clock.after(1, () => {
-    void runJob($, origin, question, isDialogOpen)
+    void runJob($, asked)
   })
 
-  return 'rating the question, then it shows the model and effort it would use'
+  return { kind: 'started', text: 'rating the question, then it shows the model and effort it would use' }
 }
 
 function describeJob(current: Job | null): string {
@@ -1041,7 +1065,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'explain',
       description: 'Build an explainer for the last question Claude asked, read in a pane of the terminal',
-      argumentHint: '[view | status | stop | cancel | revoice | page | open | publish | tts | set | about <text>]',
+      argumentHint: USAGE,
     })
     await $.command.register({
       name: 'explain-models',
@@ -1104,7 +1128,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
-    if (e.agentId !== undefined || isOwnDialog(e.questions)) return next(e)
+    if (e.agentId !== undefined || next.origin.plugin !== 'engine' || isOwnDialog(e.questions)) return next(e)
 
     const settings = await loadSettings($)
     const offered = settings.shouldOffer && (await isInteractive($)) ? addOffer(e.questions) : { questions: [...e.questions], isOffered: false }
@@ -1123,15 +1147,18 @@ export const register: Register = on => {
 
     if (ran.deny !== undefined || ran.isError === true || !wantsExplainer((ran.result as { answers?: unknown }).answers)) return ran
 
-    await startJob($, 'option', describeQuestions(asked), false)
+    const started = await startJob($, { origin: 'option', question: describeQuestions(asked), isDialogOpen: false, dialogId: e.tool_use_id })
+    if (started.kind !== 'refused') return { deny: WITHHELD }
+    $.ui.toast(`no explainer for this question: ${started.text}`, { timeoutMs: 8000 })
 
-    return { deny: WITHHELD }
+    return { deny: notStarted(started.text) }
   }).catch(($, e, next) => next(e))
 
   // A button above the dialog: one click starts the explainer and the dialog stays open.
   on('ui.render', { component: 'AskUserQuestion' }, async ($, e, next) => {
     const held = await read($, pending)
-    if (held === null || !held.isOpen || isOwnDialog(e.props.questions as { header?: string }[])) return next(e)
+    if (held === null || !held.isOpen || held.id !== e.requestId || isOwnDialog(e.props.questions as { header?: string }[])) return next(e)
+    if (!(await loadSettings($)).shouldOffer) return next(e)
 
     const { Box, Button } = $.ui.resolve(e)
 
@@ -1141,7 +1168,8 @@ export const register: Register = on => {
           key="lucid-explain"
           label="Explain this first"
           onPress={async () => {
-            $.ui.toast(await startJob($, 'button', describeQuestions(held.questions), true), { timeoutMs: 6000 })
+            const started = await startJob($, { origin: 'button', question: describeQuestions(held.questions), isDialogOpen: true, dialogId: held.id })
+            $.ui.toast(started.text, { timeoutMs: 6000 })
           }}
         />
         {await next(e)}
@@ -1224,10 +1252,12 @@ export const register: Register = on => {
       return { text: 'cancelled' }
     }
 
-    const held = await read($, pending)
-    const question = verb === 'about' ? rest.join(' ') : verb === '' ? (held === null ? '' : describeQuestions(held.questions)) : e.args.trim()
+    if (verb !== '' && verb !== 'about') return { text: `/explain has no "${verb}". Usage: /explain ${USAGE}` }
 
-    return { text: await startJob($, 'command', question, false) }
+    const held = await read($, pending)
+    const question = verb === 'about' ? rest.join(' ') : held === null ? '' : describeQuestions(held.questions)
+
+    return { text: (await startJob($, { origin: 'command', question, isDialogOpen: false })).text }
   })
 
   on('command.run', { command: 'explain-models' }, async ($, e) => {
@@ -1259,6 +1289,7 @@ export const register: Register = on => {
     const Code = e.surface === 'terminal' ? $.ui.resolve(e).Code : undefined
     const current = await read($, job)
     const seen: View = await read($, view)
+    const held = await read($, pending)
     const settings = await loadSettings($)
     const { unicodeSafe } = await probe($)
     const width = Math.max(20, e.props.bodyColumns)
@@ -1306,6 +1337,7 @@ export const register: Register = on => {
     const step = Math.min(seen.step, Math.max(steps.length - 1, 0))
     const isPlaying = section !== undefined && seen.playing === section.id
     const isSettled = current.stage === 'done' || current.stage === 'failed' || current.stage === 'cancelled'
+    const canAskAgain = current.origin === 'option' && current.stage === 'done' && current.dialogId !== undefined && held?.id === current.dialogId
     const clamp = (at: number) => Math.min(Math.max(at, 0), Math.max(count - 1, 0))
     const goSection = (to: number) => update($, view, shown => ({ ...shown, index: clamp(to), step: 0, isToc: false }))
     const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(step + by, 0), Math.max(steps.length - 1, 0)) }))
@@ -1581,7 +1613,7 @@ export const register: Register = on => {
               }}
             />
           )}
-          {current.origin === 'option' && current.stage === 'done' && (
+          {canAskAgain && (
             <Button
               key="again"
               label="↺ Ask me again"
@@ -1599,7 +1631,7 @@ export const register: Register = on => {
             steps.length > 1 ? (settings.shouldAnimate ? 'f b g' : 'f b') : '',
             section?.audio !== undefined ? 'l s' : '',
             current.file !== undefined || Boolean(current.url) ? 'o' : '',
-            current.origin === 'option' && current.stage === 'done' ? 'a' : '',
+            canAskAgain ? 'a' : '',
           ]
             .filter(Boolean)
             .join(' · '),
