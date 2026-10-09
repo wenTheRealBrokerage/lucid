@@ -21,7 +21,7 @@ import {
 } from './explainer'
 import { checkNarration, chunkScript, keepPromised, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
-import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
+import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer, withPolicy } from './page'
 import { CLASSIFIER_SYSTEM, FIXTURES_TO_NARRATE, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief } from './prompts'
 import {
   aliasRoster,
@@ -743,7 +743,7 @@ async function buildPage($: EngineInterface): Promise<void> {
     if (!(await isAt($, id, 'paging'))) return
     if (html === undefined) throw new Error(`the page failed its checks: ${problems.slice(0, 3).join('; ')}`)
 
-    await $.fs.write(`${dir}/page.html`, html)
+    await $.fs.write(`${dir}/page.html`, withPolicy(html))
     // One self-contained file: the page, its audio as data URIs, the player.
     const clips = current.sections.flatMap(section => (section.audio === undefined ? [] : [section.id, mimeOf(section.audio), section.audio]))
     const final = `${dir}/explainer.html`

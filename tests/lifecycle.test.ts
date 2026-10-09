@@ -224,6 +224,8 @@ describe('a rebuilt page', () => {
     await explain($, 'page')
     await seen.clock.advance(1)
     expect(seen.job()?.file).toBe(`${DIR}/j1/explainer.html`)
+    expect(seen.files.get(`${DIR}/j1/page.html`)?.split('\n')[0]).toContain('<meta http-equiv="Content-Security-Policy" content="default-src \'none\';')
+    expect(seen.files.get(`${DIR}/j1/page.html`)?.endsWith(PAGE)).toBe(true)
     await explain($, 'publish')
     await seen.clock.advance(1)
     expect(seen.artifacts).toHaveLength(1)

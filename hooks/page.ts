@@ -13,10 +13,23 @@ const SCRIPT_HOSTS = [
   'https://cdnjs.cloudflare.com/',
   'https://cdn.jsdelivr.net/npm/',
   'https://unpkg.com/',
-  'https://cdn.tailwindcss.com',
+  'https://cdn.tailwindcss.com/',
   'https://code.jquery.com/',
 ]
-const STYLE_HOSTS = ['https://fonts.googleapis.com/']
+const STYLE_HOST = /^https:\/\/fonts\.(?:googleapis|gstatic)\.com(?:[/?#]|$)/i
+const PAGE_POLICY = [
+  "default-src 'none'",
+  `script-src 'unsafe-inline' ${SCRIPT_HOSTS.join(' ')}`,
+  "style-src 'unsafe-inline' https://fonts.googleapis.com",
+  'font-src https://fonts.gstatic.com data:',
+  'img-src data: blob:',
+  'media-src data: blob:',
+  "connect-src 'none'",
+  "form-action 'none'",
+  "base-uri 'none'",
+].join('; ')
+
+export const withPolicy = (html: string): string => `<meta http-equiv="Content-Security-Policy" content="${PAGE_POLICY}">\n${html}`
 
 export type PageCheck = { isValid: true; title: string } | { isValid: false; problems: string[] }
 
@@ -65,9 +78,12 @@ export function describeQuestions(questions: readonly AskedQuestion[]): string {
 }
 
 const attributes = (html: string, tag: string, name: string): string[] =>
-  [...html.matchAll(new RegExp(`<${tag}\\b[^>]*\\s${name}\\s*=\\s*["']([^"']+)["']`, 'gi'))].flatMap(match => match[1] ?? [])
+  [...html.matchAll(new RegExp(`<${tag}\\b[^>]*\\s${name}\\s*=\\s*(?:["']([^"']+)["']|([^\\s>"']+))`, 'gi'))].flatMap(match => match[1] ?? match[2] ?? [])
 
-const isPinned = (url: string): boolean => /[@/]\d+\.\d+(\.\d+)?([/.-]|$)/.test(url)
+const isRemote = (url: string): boolean => /^(https?:)?\/\//i.test(url)
+
+const isPinned = (url: string): boolean =>
+  /[@/]\d+\.\d+\.\d+([/.-]|$)/.test(url) || (url.startsWith('https://code.jquery.com/') && /-\d+\.\d+\.\d+([/.-]|$)/.test(url))
 
 /**
  * Checks a built page against the Artifact page contract and against the
@@ -88,6 +104,7 @@ export function checkPage(html: string, sections: readonly Section[]): PageCheck
   if (/<!doctype|<html[\s>]|<head[\s>]|<body[\s>]/i.test(html)) problems.push('the page wraps itself in doctype, html, head or body tags')
   if (/\bfetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(|sendBeacon/.test(scripts)) problems.push('the page makes a network call from script')
   if (/<(iframe|object|embed)\b/i.test(html)) problems.push('the page embeds another document')
+  if (/<meta\b[^>]*http-equiv\s*=\s*["']?refresh/i.test(html)) problems.push('the page redirects itself with a meta refresh')
   if (/<audio\b/i.test(html) || /new Audio\(|speechSynthesis/.test(scripts)) problems.push('the page has audio code of its own; lucid adds the players')
   if (!/prefers-color-scheme/.test(html) || !/data-theme/.test(html)) problems.push('the page does not style both themes')
 
@@ -97,11 +114,11 @@ export function checkPage(html: string, sections: readonly Section[]): PageCheck
   }
 
   for (const href of attributes(html, 'link', 'href')) {
-    if (/^https?:/i.test(href) && !STYLE_HOSTS.some(host => href.startsWith(host))) problems.push(`stylesheet or link tag from a blocked host: ${href}`)
+    if (isRemote(href) && !STYLE_HOST.test(href)) problems.push(`stylesheet or link tag from a blocked host: ${href}`)
   }
 
   for (const src of [...attributes(html, 'img', 'src'), ...attributes(html, 'video', 'src'), ...attributes(html, 'source', 'src')]) {
-    if (/^https?:/i.test(src)) problems.push(`media from another host: ${src}`)
+    if (isRemote(src)) problems.push(`media from another host: ${src}`)
   }
 
   const marked = new Set(attributes(html, '[a-z0-9]+', 'data-lucid-section'))

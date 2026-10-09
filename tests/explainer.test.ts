@@ -65,6 +65,29 @@ describe('checks on a built explainer', () => {
     expect(problemsOf(text(document => ({ ...document, sections: [] })))).toEqual(['explainer.json lists no sections'])
   })
 
+  test('a title that is too long or broken over lines, an empty heading and empty markdown each fail by name', async () => {
+    const withSection = (change: object) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], ...change }] })))
+    expect(problemsOf(text(document => ({ ...document, title: 'x'.repeat(81) })))).toEqual(['the title is longer than 80 characters'])
+    expect(problemsOf(text(document => ({ ...document, title: 'one\ntwo' })))).toEqual(['the title has a line break or a control character'])
+    expect(problemsOf(text(document => ({ ...document, title: 7 })))).toEqual(['explainer.json has no title'])
+    expect(withSection({ heading: '  ' })).toEqual(['section "the-table" has an empty heading'])
+    expect(withSection({ markdown: ' \n ' })).toEqual(['section "the-table" has empty markdown'])
+    expect(withSection({ heading: 'a\u0007b' })).toEqual(['section "the-table" has a control character other than tab or newline'])
+    expect(problemsOf(text(document => ({ ...document, sections: 'none' })))).toEqual(['explainer.json lists no sections'])
+    expect(problemsOf(text(document => ({ ...document, sections: [7] })))).toEqual(['section 1 is missing id, heading or markdown'])
+  })
+
+  test('a diagram that is not an object, a twin that is not a list of lines and a step with a control character each fail by name', async () => {
+    const withSection = (change: object) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], ...change }] })))
+    expect(withSection({ diagram: 'a drawing' })).toEqual(['section "the-table": diagram is not an object'])
+    expect(withSection({ diagram: { ascii: 'one line' } })).toEqual(['section "the-table": diagram.ascii must be a non-empty list of lines'])
+    expect(withSection({ diagram: { ascii: ['+--+'], unicode: [] } })).toEqual(['section "the-table": diagram.unicode, when given, must be a non-empty list of lines'])
+    expect(withSection({ diagram: { ascii: ['+--+'], unicode: 'one line' } })).toEqual(['section "the-table": diagram.unicode, when given, must be a non-empty list of lines'])
+    expect(withSection({ steps: ['fine', 'a\u0007b'] })).toEqual(['section "the-table": a step has a control character'])
+    expect(withSection({ steps: 'one' })).toEqual(['section "the-table": steps must be a non-empty list of non-empty lines'])
+    expect(withSection({ takeaway: 7 })).toEqual(['section "the-table": takeaway must be a sentence'])
+  })
+
   test('section ids must be kebab-case and unique, and every section needs its three fields', async () => {
     expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[0], id: 'The Race' }] })))).toEqual(['section id "The Race" is not kebab-case'])
     expect(problemsOf(text(document => ({ ...document, sections: [document.sections[0], document.sections[0]] })))).toEqual(['section id "the-race" is used twice'])

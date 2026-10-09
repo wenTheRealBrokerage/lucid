@@ -16,8 +16,8 @@ You build one explainer page from a finished explainer document. Your task messa
 
 ## Page contract
 
-- Write page content only: no doctype, `html`, `head` or `body` tags. Put `<title>` and `<style>` at the top.
+- Write page content only: no doctype, `html`, `head` or `body` tags. Put `<title>` first, on the first line of the file, and `<style>` right after it.
 - The title is a plain name of two to four words. No colon or dash followed by an explanation.
-- No `fetch`, XHR, WebSocket, iframes or external media. Scripts load only from cdnjs.cloudflare.com, cdn.jsdelivr.net/npm/, unpkg.com, cdn.tailwindcss.com or code.jquery.com, pinned to an exact version. Stylesheets load only from fonts.googleapis.com. Inline everything else.
+- No `fetch`, XHR, WebSocket, iframes, forms that submit, meta refresh or external media. The text `fetch(` must not appear anywhere inside a `<script>`: not in a comment, and not as a method name of your own such as `store.fetch(`. The same holds for `XMLHttpRequest`, `WebSocket(`, `EventSource(` and `sendBeacon`. lucid adds a Content-Security-Policy to the page that blocks every load and every connection outside this list.\n- Scripts load only from cdnjs.cloudflare.com, cdn.jsdelivr.net/npm/, unpkg.com, cdn.tailwindcss.com or code.jquery.com, each pinned to an exact three-part version (`@4.4.1` or `/4.4.1/`; on code.jquery.com, `jquery-3.7.1.min.js`). Stylesheets load only from fonts.googleapis.com; its `preconnect` links to fonts.googleapis.com and fonts.gstatic.com are allowed. Inline everything else: images and media as `data:` URIs.
 - Define every colour as a token on `:root`, redefine the tokens under `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])` and again under `:root[data-theme="dark"]`, and give `body` an explicit background.
 - The page must work at phone width (about 400px) with a 16px side gutter and no sideways page scroll. Wide tables, code and diagrams scroll inside their own container.
