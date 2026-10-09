@@ -107,8 +107,9 @@ lucid reads `TERMINAL_EMULATOR`, `TERM_PROGRAM`, `TERM`, `COLORTERM`, `TMUX` and
 
 | Emulator | Box drawing | Notes |
 | --- | --- | --- |
-| iTerm2, Terminal.app, VS Code, Warp, kitty, Ghostty, Windows Terminal | trusted | Terminal.app is treated as 256 colours even when `COLORTERM` says otherwise |
-| JetBrains terminal | trusted | a Markdown table's box-drawing borders rendered intact in the Reworked terminal on 2026-10-09 |
+| Warp | trusted | verified by a run: a table and a box-drawing fence drew intact |
+| JetBrains terminal | trusted | verified by a run for a table: its box-drawing borders rendered intact in the Reworked terminal on 2026-10-09; a diagram is unverified |
+| iTerm2, Terminal.app, VS Code, kitty, Ghostty, Windows Terminal | trusted | assumed from research, not verified by a run; Terminal.app is treated as 256 colours even when `COLORTERM` says otherwise |
 | inside tmux | ASCII | the outer emulator's variables do not pass through |
 | anything else | ASCII | |
 
@@ -137,6 +138,8 @@ Run the checklist in each terminal and fill a row. Every cell starts **UNVERIFIE
 | VS Code terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 | tmux | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 | Windows Terminal | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| kitty | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
+| Ghostty | | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED |
 
 In IntelliJ, start `claude` from a terminal tab, not the plugin icon, which has been reported to give an 80x24 PTY. Older IDEs need "Move focus to the editor with Escape" unchecked for `Esc` to reach the app.
 
@@ -175,10 +178,24 @@ Clips are rendered to files, so they survive `/explain revoice` and are embedded
 ## Privacy
 
 - Building an explainer sends the question and the last few messages of your session to a Claude model on your account.
-- Nothing leaves this machine otherwise. **`/explain publish` uploads the page to claude.ai**, private to you until you share it, and only after `/explain set publish on` and a confirmation.
+- No session content leaves this machine otherwise. **`/explain publish` uploads the page to claude.ai**, private to you until you share it, and only after `/explain set publish on` and a confirmation.
+- **The model roster is fetched, without session content.** In an interactive session lucid checks its roster when it is missing or older than 24 hours: one request for the list of models to api.anthropic.com with the session's own login and, when that answers, one request with no login for the public pricing page on platform.claude.com. `LUCID_ROSTER_SOURCE=fallback` or `alias` makes neither.
+- **The opt-in HTML page can load from six hosts when you open it**, if its builder used them: pinned scripts from cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com, cdn.tailwindcss.com and code.jquery.com, and fonts from Google Fonts. Those hosts then see a request from your browser. A Content-Security-Policy that lucid writes into the page blocks every other load, every connection and every form post. It cannot stop a script from sending the page to another address, and the published copy is governed by claude.ai's own policy.
 - **Hosted speech sends narration text to a third party.** It is off until you turn it on.
 - `say` and Kokoro render on this machine. Kokoro downloads its model once from Hugging Face.
-- Documents, scripts, audio and pages are kept under `<config dir>/plugins/data/lucid/jobs/`, where the config dir is `CLAUDE_CONFIG_DIR` or `~/.claude`. Delete that folder to remove them.
+- Documents, scripts, audio and pages are kept under `<config dir>/plugins/data/lucid/jobs/`, where the config dir is `CLAUDE_CONFIG_DIR` or `~/.claude`. Delete that folder to remove them. While a build runs, the builder's working copy sits in a `lucid-<id>` folder under `TMPDIR`, which lucid removes when the build ends.
+
+## Environment
+
+lucid reads thirteen variables and writes none.
+
+| Variable | Read for |
+| --- | --- |
+| `CLAUDE_CONFIG_DIR`, `HOME` | where lucid keeps its data: `<config dir>/plugins/data/lucid`, the config dir being `CLAUDE_CONFIG_DIR` or `~/.claude` |
+| `TMPDIR` | where a builder's working copy sits while a build runs; `/tmp` when it is unset or empty |
+| `TERMINAL_EMULATOR`, `TERM_PROGRAM`, `TERM`, `COLORTERM`, `TMUX`, `WT_SESSION` | the terminal probe |
+| `LUCID_ROSTER_SOURCE` | `fallback` takes the roster from `roster.fallback.json` and `alias` from Claude Code's own aliases, each without a request; unset, or anything else, asks the models API first |
+| `LUCID_TTS_URL`, `LUCID_TTS_API_KEY`, `LUCID_TTS_MODEL` | hosted speech |
 
 ## Platform limits
 
@@ -212,6 +229,10 @@ hooks/explainer.ts       the document's checks and the pane's pure helpers
 hooks/terminal.ts        the terminal probe, from environment variables
 hooks/page.ts            the dialog offer and the opt-in page's checks
 hooks/{roster,routing,narration}.ts  model choice and narration: pure functions
+hooks/prompts.ts         what lucid says to models: the briefs, the classifier's rules, the texts a narration writer is tried on
+lucid.config.json        which family plays each role, the ladders, and which rung each rating starts on
+roster.fallback.json     model ids and prices for when the models API cannot be reached
+types/index.d.ts         the mod's own types and the contract for its state
 prompts/explainer.md     the terminal builder's instructions
 prompts/explainer-page.md  the opt-in page builder's instructions
 prompts/narration-writer.md
@@ -221,4 +242,4 @@ assets/player.html       the page's Listen button
 tests/                   run by claude plugin test
 ```
 
-The subagents are registered at run time, not declared in `agents/`: a spawn takes only an engine alias as its model, so the exact model id and the effort ride the registration. The terminal builder gets the `Write` tool alone; the page builder gets `Read`, `Write`, `Edit` and `Skill`.
+The subagents are registered at run time, not declared in `agents/`, because a registration carries what a spawn cannot: the effort, the system prompt, the tool list and hooks of the agent's own. lucid puts the exact model id there as well, though a spawn would take an alias or a full id. The terminal builder gets the `Write` tool alone; the page builder gets `Read`, `Write`, `Edit` and `Skill`. Each builder's registration carries a hook that blocks a write to any file but the one lucid reads back.

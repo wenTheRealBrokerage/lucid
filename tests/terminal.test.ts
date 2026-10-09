@@ -4,7 +4,8 @@ import { probeTerminal } from '../hooks/terminal'
 import type { TerminalEnv, TerminalKind } from '../hooks/terminal'
 
 // Each row: the environment a terminal is known to set, and what the probe
-// must make of it. Box drawing is trusted only on emulators verified by hand.
+// must make of it. Box drawing is trusted on the emulators lucid lists: two
+// verified by a run (Warp, JetBrains), the rest assumed from research.
 
 const ROWS: [string, TerminalEnv, { kind: TerminalKind; unicodeSafe: boolean; truecolor: boolean; inTmux: boolean }][] = [
   ['iTerm2', { TERM_PROGRAM: 'iTerm.app', TERM: 'xterm-256color', COLORTERM: 'truecolor' }, { kind: 'iterm', unicodeSafe: true, truecolor: true, inTmux: false }],

@@ -319,9 +319,9 @@ function awaitAgent($: EngineInterface, agentId: string, timeoutMs: number): Pro
 }
 
 /**
- * Registers one of lucid's two agent types for this run, on this model at
- * this effort, starts it and waits for its answer. A spawn's own `model`
- * takes only the engine's aliases, so the exact id rides the registration.
+ * Registers one of lucid's three agent types for this run, on this model at
+ * this effort, starts it and waits for its answer. The registration carries
+ * what a spawn cannot: the effort, the system prompt, the tools and hooks.
  */
 async function runAgent(
   $: EngineInterface,

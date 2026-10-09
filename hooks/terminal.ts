@@ -5,7 +5,7 @@ export type TerminalKind = 'jetbrains' | 'iterm' | 'apple-terminal' | 'vscode' |
 
 export type Terminal = {
   kind: TerminalKind
-  /** Whether box-drawing diagrams are drawn without gaps here; false until a terminal is verified by hand. */
+  /** Whether lucid trusts box-drawing diagrams to draw without gaps here: verified by a run for two emulators, assumed from research for the rest. */
   unicodeSafe: boolean
   /** Whether the terminal announces 24-bit colour. */
   truecolor: boolean
@@ -23,9 +23,10 @@ export type TerminalEnv = {
 }
 
 /**
- * Emulators verified to draw box drawing and block glyphs without gaps.
- * JetBrains joined on 2026-10-09: a Markdown table's borders rendered intact in
- * the Reworked terminal. Unknown kinds and tmux wait for a verified run.
+ * Emulators trusted to draw box drawing and block glyphs without gaps. Two are
+ * verified by a run: Warp, and JetBrains since 2026-10-09, when a Markdown
+ * table's borders rendered intact in the Reworked terminal. The other six are
+ * assumed from research. Unknown kinds and tmux wait for a verified run.
  */
 const UNICODE_SAFE: readonly TerminalKind[] = ['iterm', 'apple-terminal', 'vscode', 'warp', 'kitty', 'ghostty', 'windows-terminal', 'jetbrains']
 
