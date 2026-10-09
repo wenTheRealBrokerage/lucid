@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Complexity, Effort, Job, Pending, Section, Usage, View } from '../types'
+import type { Complexity, Effort, Job, Pending, Section, Stage, Usage, View } from '../types'
 
 import { checkExplainer, narratedSections, nextNarrated, pickDiagram, sectionText, widthOf } from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
@@ -1261,34 +1261,34 @@ export const register: Register = on => {
     const seen: View = await read($, view)
     const settings = await loadSettings($)
     const { unicodeSafe } = await probe($)
-    const width = e.props.bodyColumns
-    const rule = '─'.repeat(Math.max(1, width))
+    const width = Math.max(20, e.props.bodyColumns)
+    const cells = (text: string) => [...text].length
 
-    const pill = (text: string) => (
-      <Text>
-        <Text color="claude">▐</Text>
+    // A full-width strip in the accent: the title at the left, a counter at the right.
+    const strip = (left: string, right: string) => {
+      const room = Math.max(0, width - cells(left) - cells(right) - 2)
+
+      return (
         <Text backgroundColor="claude" color="inverseText" bold>
-          {text}
+          {` ${left}${' '.repeat(room)}${right} `}
         </Text>
-        <Text color="claude">▌</Text>
-      </Text>
-    )
-    const hint = !e.props.isFocused && (
-      <Box paddingX={1}>
-        <Text dimColor italic>
-          ctrl+x tab to take the keys
-        </Text>
+      )
+    }
+    const keysLine = (keys: string) => (
+      <Box paddingX={1} columnGap={2}>
+        <Text dimColor>{keys}</Text>
+        {!e.props.isFocused && (
+          <Text dimColor italic>
+            ctrl+x tab to take the keys
+          </Text>
+        )}
       </Box>
     )
 
     if (current === null) {
       return (
         <Box flexDirection="column">
-          <Box>
-            {pill('lucid')}
-            <Text dimColor> explainer</Text>
-          </Box>
-          <Text dimColor>{rule}</Text>
+          {strip('lucid', 'explainer')}
           <Box flexDirection="column" paddingX={1} paddingY={1}>
             <Text>No explainer in this session yet.</Text>
             <Text dimColor>When Claude asks a question, pick "Explain this first", or run /explain afterwards.</Text>
@@ -1310,42 +1310,72 @@ export const register: Register = on => {
     const goSection = (to: number) => update($, view, shown => ({ ...shown, index: clamp(to), step: 0, isToc: false }))
     const goStep = (by: number) => update($, view, shown => ({ ...shown, step: Math.min(Math.max(step + by, 0), Math.max(steps.length - 1, 0)) }))
 
-    // Progress in eighths: the sections read so far, in the accent, over a dim floor.
-    const barWidth = Math.min(16, Math.max(6, Math.floor(width / 4)))
+    // A thin reading-progress bar across the whole width, in eighths.
     const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
     const ratio = count === 0 ? 0 : (index + 1) / count
-    const full = Math.floor(ratio * barWidth)
-    const part = Math.floor((ratio * barWidth - full) * 8)
+    const full = Math.floor(ratio * width)
+    const part = Math.floor((ratio * width - full) * 8)
     const bar = '█'.repeat(full) + (EIGHTHS[part] ?? '')
-    const floor = '▁'.repeat(Math.max(0, barWidth - full - (part > 0 ? 1 : 0)))
+    const rest = '░'.repeat(Math.max(0, width - cells(bar)))
 
-    const header = (
-      <Box flexDirection="column">
-        <Box justifyContent="space-between">
-          <Box>
-            {pill(title)}
-            <Text dimColor> explainer</Text>
-          </Box>
-          {count > 0 && (
-            <Text>
-              <Text color="claude">{bar}</Text>
-              <Text dimColor>
-                {floor} {index + 1}/{count}
-              </Text>
-            </Text>
-          )}
-        </Box>
-        <Text dimColor>{rule}</Text>
-        {(!isSettled || current.stage === 'failed' || current.stage === 'cancelled') && (
-          <Box paddingX={1}>
+    // The build as a pipeline while it runs, or the reason it stopped.
+    const STAGES: { stage: Stage; label: string }[] = [
+      { stage: 'classifying', label: 'rated' },
+      { stage: 'confirming', label: 'chosen' },
+      { stage: 'building', label: 'building' },
+      { stage: 'narrating', label: 'narrating' },
+      { stage: 'voicing', label: 'voicing' },
+    ]
+    const at = STAGES.findIndex(one => one.stage === current.stage)
+    const pipeline = (
+      <Box flexDirection="column" paddingX={1} paddingTop={1}>
+        {current.stage === 'failed' || current.stage === 'cancelled' ? (
+          <Text>
+            <Text color={current.stage === 'failed' ? 'error' : 'warning'}>{current.stage === 'failed' ? '✗ ' : '■ '}</Text>
+            <Text>{current.note}</Text>
+          </Text>
+        ) : (
+          <Box flexDirection="column">
+            <Box columnGap={2}>
+              {STAGES.map((one, i) => (
+                <Box key={`stage-${i}`}>
+                  {i < at && <Text color="success">✓ {one.label}</Text>}
+                  {i === at && (
+                    <Text color="claude" bold>
+                      ◐ {one.label}
+                    </Text>
+                  )}
+                  {i > at && <Text dimColor>○ {one.label}</Text>}
+                </Box>
+              ))}
+            </Box>
             <Text dimColor>
-              {current.stage}: {current.note}
-              {current.model === undefined ? '' : ` · ${current.model} at ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`}
+              {current.note}
+              {current.model === undefined ? '' : ` · ${current.model}, ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`}
             </Text>
           </Box>
         )}
       </Box>
     )
+
+    // Section tabs when they fit on one row: click one, or press its digit while the contents list is up.
+    const tabLabels = current.sections.map(one => one.heading)
+    const tabsWidth = tabLabels.reduce((sum, label) => sum + cells(label) + 2, 0) + Math.max(0, count - 1) * 3 + 2
+    const tabs =
+      count > 1 && tabsWidth <= width ? (
+        <Box paddingX={1} columnGap={3}>
+          {current.sections.map((one, i) => (
+            <Button key={`tab-${i}`} label={i === index ? `▸ ${one.heading}` : `  ${one.heading}`} plain dimColor={i !== index} onPress={() => goSection(i)} />
+          ))}
+        </Box>
+      ) : count > 1 ? (
+        <Box paddingX={1}>
+          <Text dimColor>
+            {index + 1} of {count} ·{' '}
+          </Text>
+          <Text bold>{section?.heading ?? ''}</Text>
+        </Box>
+      ) : undefined
 
     const diagram =
       section?.diagram === undefined
@@ -1370,18 +1400,45 @@ export const register: Register = on => {
             )
           })()
 
+    // Frames: a timeline of dots, the revealed frames under it, the current one marked.
+    const timeline = steps.map((_, i) => (i < step ? '●' : i === step ? '◉' : '○')).join('━')
+    const frames = steps.length > 0 && (
+      <Box flexDirection="column" marginTop={1}>
+        <Text>
+          <Text color="claude">{timeline}</Text>
+          <Text dimColor>
+            {'  '}
+            {step + 1}/{steps.length}
+            {seen.isAuto ? ' · auto' : ''}
+          </Text>
+        </Text>
+        {steps.slice(0, step + 1).map((line, i) => (
+          <Box key={`step-${i}`} paddingLeft={1}>
+            {i === step ? (
+              <Text bold>
+                <Text color="claude">▶ </Text>
+                {line}
+              </Text>
+            ) : (
+              <Text dimColor>✓ {line}</Text>
+            )}
+          </Box>
+        ))}
+      </Box>
+    )
+
     const body = seen.isToc ? (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <Text dimColor>CONTENTS</Text>
-        {current.sections.map((one, at) => (
-          <Box key={`toc-${at}`} columnGap={1}>
-            <Text color={at === index ? 'claude' : undefined} dimColor={at !== index}>
-              {at === index ? '●' : '○'}
+        {current.sections.map((one, i) => (
+          <Box key={`toc-${i}`} columnGap={1}>
+            <Text color={i === index ? 'claude' : undefined} dimColor={i !== index}>
+              {i === index ? '●' : '○'}
             </Text>
-            {at < 9 ? (
-              <Button key={`toc-go-${at}`} label={one.heading} hotkey={String(at + 1)} plain dimColor={at !== index} onPress={() => goSection(at)} />
+            {i < 9 ? (
+              <Button key={`toc-go-${i}`} label={one.heading} hotkey={String(i + 1)} plain dimColor={i !== index} onPress={() => goSection(i)} />
             ) : (
-              <Button key={`toc-go-${at}`} label={one.heading} plain dimColor={at !== index} onPress={() => goSection(at)} />
+              <Button key={`toc-go-${i}`} label={one.heading} plain dimColor={i !== index} onPress={() => goSection(i)} />
             )}
           </Box>
         ))}
@@ -1392,34 +1449,18 @@ export const register: Register = on => {
       </Box>
     ) : (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <Text dimColor>SECTION {index + 1}</Text>
-        <Text bold>{section.heading}</Text>
+        <Text color="claude" bold>
+          {section.heading}
+        </Text>
         <Box marginTop={1}>
           <Markdown text={section.markdown} />
         </Box>
         {diagram}
-        {steps.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>
-              STEPS {step + 1}/{steps.length}
-              {seen.isAuto ? ' · auto' : ''}
-            </Text>
-            {steps.slice(0, step + 1).map((line, at) => (
-              <Box key={`step-${at}`}>
-                <Text>
-                  {at === step ? <Text color="claude">▶ </Text> : <Text dimColor>· </Text>}
-                  {line}
-                </Text>
-              </Box>
-            ))}
-          </Box>
-        )}
+        {frames}
         {section.takeaway !== undefined && (
           <Box marginTop={1} borderStyle="quote" borderColor="claude" paddingX={1}>
             <Text>
-              <Text color="claude" bold>
-                Takeaway{'  '}
-              </Text>
+              <Text color="claude">✦ </Text>
               {section.takeaway}
             </Text>
           </Box>
@@ -1429,21 +1470,24 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        {header}
+        {strip(title, count > 0 ? `${index + 1} / ${count}` : current.stage)}
+        <Text>
+          <Text color="claude">{bar}</Text>
+          <Text dimColor>{rest}</Text>
+        </Text>
+        {!isSettled || current.stage !== 'done' ? pipeline : undefined}
+        {count > 0 && !seen.isToc && <Box paddingTop={1}>{tabs}</Box>}
         {body}
-        <Text dimColor>{rule}</Text>
-        <Box columnGap={3} paddingX={1} flexWrap="wrap">
-          {count > 1 && <Button key="prev" label="prev" hotkey="p" plain dimColor onPress={() => goSection(index - 1)} />}
-          {count > 1 && <Button key="next" label="next" hotkey="n" plain onPress={() => goSection(index + 1)} />}
-          {steps.length > 1 && <Button key="frame-back" label="rewind" hotkey="b" plain dimColor onPress={() => goStep(-1)} />}
-          {steps.length > 1 && <Button key="frame" label="step" hotkey="f" plain onPress={() => goStep(1)} />}
+        <Box columnGap={1} paddingX={1} flexWrap="wrap">
+          {count > 1 && <Button key="prev" label="◀ Prev" hotkey="p" onPress={() => goSection(index - 1)} />}
+          {count > 1 && <Button key="next" label="Next ▶" hotkey="n" variant="primary" onPress={() => goSection(index + 1)} />}
+          {steps.length > 1 && <Button key="frame-back" label="‹ Frame" hotkey="b" onPress={() => goStep(-1)} />}
+          {steps.length > 1 && <Button key="frame" label="Frame ›" hotkey="f" onPress={() => goStep(1)} />}
           {steps.length > 1 && settings.shouldAnimate && (
             <Button
               key="auto"
-              label={seen.isAuto ? 'pause' : 'auto'}
+              label={seen.isAuto ? '⟳ Pause' : '⟳ Auto'}
               hotkey="g"
-              plain
-              dimColor
               onPress={async () => {
                 const isOn = !seen.isAuto
                 await update($, view, shown => ({ ...shown, isAuto: isOn, step: isOn && step >= steps.length - 1 ? 0 : shown.step }))
@@ -1452,14 +1496,11 @@ export const register: Register = on => {
               }}
             />
           )}
-          {count > 0 && <Button key="toc" label={seen.isToc ? 'close' : 'contents'} hotkey="t" plain dimColor onPress={() => update($, view, shown => ({ ...shown, isToc: !shown.isToc }))} />}
           {section?.audio !== undefined && !isPlaying && (
             <Button
               key="play"
-              label="play"
+              label="▶ Play"
               hotkey="l"
-              plain
-              dimColor
               onPress={() => {
                 void playSection($, section.id)
               }}
@@ -1468,22 +1509,20 @@ export const register: Register = on => {
           {seen.playing !== null && (
             <Button
               key="stop"
-              label="stop"
+              label="■ Stop"
               hotkey="s"
-              plain
               onPress={async () => {
                 stopPlayback()
                 await update($, view, shown => ({ ...shown, playing: null }))
               }}
             />
           )}
+          {count > 0 && <Button key="toc" label={seen.isToc ? '≡ Close' : '≡ Contents'} hotkey="t" onPress={() => update($, view, shown => ({ ...shown, isToc: !shown.isToc }))} />}
           {(current.file !== undefined || Boolean(current.url)) && (
             <Button
               key="open"
-              label="page"
+              label="⤴ Page"
               hotkey="o"
-              plain
-              dimColor
               onPress={async () => {
                 $.ui.toast(`${await openPage($)}`, { timeoutMs: 6000 })
               }}
@@ -1492,17 +1531,26 @@ export const register: Register = on => {
           {current.origin === 'option' && current.stage === 'done' && (
             <Button
               key="again"
-              label="ask me again"
+              label="↺ Ask me again"
               hotkey="a"
-              plain
-              dimColor
               onPress={() => {
                 void $.prompt.submit({ text: 'I have read the explainer. Ask me that question again.' })
               }}
             />
           )}
         </Box>
-        {hint}
+        {keysLine(
+          [
+            count > 1 ? 'p n' : '',
+            count > 0 ? 't 1-9' : '',
+            steps.length > 1 ? (settings.shouldAnimate ? 'f b g' : 'f b') : '',
+            section?.audio !== undefined ? 'l s' : '',
+            current.file !== undefined || Boolean(current.url) ? 'o' : '',
+            current.origin === 'option' && current.stage === 'done' ? 'a' : '',
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        )}
         {current.url !== undefined && current.url !== '' && (
           <Box paddingX={1}>
             <Link href={current.url} label={current.url} />
