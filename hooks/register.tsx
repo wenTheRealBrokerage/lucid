@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Complexity, Effort, Job, Pending, Section, Stage, Usage, View } from '../types'
 
-import { checkExplainer, narratedSections, nextNarrated, pickDiagram, sectionText, widthOf } from './explainer'
+import { checkExplainer, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths, widthOf } from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
@@ -1371,7 +1371,7 @@ export const register: Register = on => {
                   ▸ {one.heading}
                 </Text>
               ) : (
-                <Text>{`  ${one.heading}`}</Text>
+                <Text color="text">{`  ${one.heading}`}</Text>
               )}
             </Button>
           ))}
@@ -1379,8 +1379,10 @@ export const register: Register = on => {
       ) : count > 1 ? (
         <Box paddingX={1}>
           <Text color="claude">{index + 1}</Text>
-          <Text> of {count} · </Text>
-          <Text bold>{section?.heading ?? ''}</Text>
+          <Text color="text"> of {count} · </Text>
+          <Text color="text" bold>
+            {section?.heading ?? ''}
+          </Text>
         </Box>
       ) : undefined
 
@@ -1422,12 +1424,12 @@ export const register: Register = on => {
         {steps.slice(0, step + 1).map((line, i) => (
           <Box key={`step-${i}`} paddingLeft={1}>
             {i === step ? (
-              <Text bold>
+              <Text color="text" bold>
                 <Text color="claude">▶ </Text>
                 {line}
               </Text>
             ) : (
-              <Text>
+              <Text color="text">
                 <Text color="success">✓ </Text>
                 {line}
               </Text>
@@ -1460,14 +1462,57 @@ export const register: Register = on => {
         <Text color="claude" bold>
           {section.heading}
         </Text>
-        <Box marginTop={1}>
-          <Markdown text={section.markdown} />
-        </Box>
+        {splitTables(section.markdown).map((block, i) =>
+          block.kind === 'markdown' ? (
+            <Box key={`block-${i}`} marginTop={1}>
+              <Markdown text={block.text} />
+            </Box>
+          ) : (
+            (() => {
+              // The engine draws table cells dim; lucid draws its own at full strength, the header in the accent.
+              const widths = tableWidths(block, Math.max(1, width - 4), 2)
+              if (widths === undefined) {
+                return (
+                  <Box key={`block-${i}`} marginTop={1}>
+                    <Markdown text={[`| ${block.header.join(' | ')} |`, `| ${block.header.map(() => '---').join(' | ')} |`, ...block.rows.map(row => `| ${row.join(' | ')} |`)].join('\n')} />
+                  </Box>
+                )
+              }
+              const inner = widths.reduce((sum, w) => sum + w, 0) + 2 * Math.max(0, widths.length - 1)
+
+              return (
+                <Box key={`block-${i}`} flexDirection="column" marginTop={1} borderStyle="round" borderDimColor paddingX={1}>
+                  <Box columnGap={2}>
+                    {block.header.map((cell, c) => (
+                      <Box key={`h-${i}-${c}`} width={widths[c]}>
+                        <Text color="claude" bold wrap="wrap">
+                          {plainCell(cell)}
+                        </Text>
+                      </Box>
+                    ))}
+                  </Box>
+                  <Text dimColor>{'─'.repeat(inner)}</Text>
+                  {block.rows.map((row, r) => (
+                    <Box key={`r-${i}-${r}`} columnGap={2}>
+                      {widths.map((w, c) => (
+                        <Box key={`c-${i}-${r}-${c}`} width={w}>
+                          <Text color="text" wrap="wrap">
+                            {plainCell(row[c] ?? '')}
+                          </Text>
+                        </Box>
+                      ))}
+                    </Box>
+                  ))}
+                </Box>
+              )
+            })()
+          ),
+        )}
         {diagram}
         {frames}
         {section.takeaway !== undefined && (
           <Box marginTop={1} borderStyle="quote" borderColor="claude" paddingX={1}>
-            <Text>
+            <Text color="text">
               <Text color="claude">✦ </Text>
               {section.takeaway}
             </Text>

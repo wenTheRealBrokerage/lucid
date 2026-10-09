@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { DIAGRAM_MAX_WIDTH, EXPLAINER_LIMIT_CHARS, STEPS_MAX, checkExplainer, narratedSections, nextNarrated, pickDiagram, sectionText } from '../hooks/explainer'
+import { DIAGRAM_MAX_WIDTH, EXPLAINER_LIMIT_CHARS, STEPS_MAX, checkExplainer, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths } from '../hooks/explainer'
 import { builderBrief, pageBrief } from '../hooks/prompts'
 import type { Section } from '../types'
 
@@ -142,5 +142,20 @@ describe('the briefs', () => {
     expect(brief).toContain('/work/page.html')
     expect(brief).toContain('data-lucid-section')
     expect(brief).not.toContain('/tmp/a.m4a')
+  })
+
+  test('pipe tables are lifted out of the markdown in order, fences left alone, and sized to the pane', async () => {
+    const markdown = 'Intro.\n\n| Option | Meaning |\n| --- | --- |\n| **Approve** | diff `fixes` it |\n| Request changes | a \\| in a cell |\n\nAfter.\n\n```text\n| not | a table |\n| --- | --- |\n```'
+    const blocks = splitTables(markdown)
+    expect(blocks.map(block => block.kind)).toEqual(['markdown', 'table', 'markdown'])
+    const table = blocks[1]
+    if (table?.kind !== 'table') throw new Error('expected a table')
+    expect(table.header).toEqual(['Option', 'Meaning'])
+    expect(table.rows).toEqual([['**Approve**', 'diff `fixes` it'], ['Request changes', 'a | in a cell']])
+    expect(plainCell('**Approve** `x`')).toBe('Approve x')
+    expect(tableWidths(table, 60, 2)).toEqual([15, 13])
+    expect(tableWidths(table, 20, 2)).toEqual([9, 9])
+    expect(tableWidths(table, 7, 2)).toBeUndefined()
+    expect(blocks[2]?.kind === 'markdown' && blocks[2].text).toContain('| not | a table |')
   })
 })

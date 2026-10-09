@@ -94,6 +94,9 @@ describe('the explainer pane', () => {
     const text = await textOf(ui)
     expect(text).not.toContain('CONTENTS')
     expect(text).toContain('Side by side')
+    // The table is lucid's own drawing, not a Markdown element the engine would draw dim.
+    expect((await ui.findAll({ type: 'Markdown' })).some(one => String(one.props.text).includes('| ---'))).toBe(false)
+    expect(await ui.find({ type: 'Text', text: /^a$/ })).toBeDefined()
     await ui.unmount()
   })
 

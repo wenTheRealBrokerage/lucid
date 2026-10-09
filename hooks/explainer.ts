@@ -188,3 +188,76 @@ export function sectionText(title: string, sections: readonly Section[], index: 
 
   return parts.join('\n')
 }
+
+/** A pipe table lifted out of the markdown, so the pane can draw it at full strength. */
+export type TableBlock = { kind: 'table'; header: string[]; rows: string[][] }
+export type MarkdownBlock = { kind: 'markdown'; text: string }
+
+const splitRow = (line: string): string[] =>
+  line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map(cell => cell.trim().replace(/\\\|/g, '|'))
+
+const isSeparator = (line: string): boolean => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(line)
+
+/** Inline markdown reduced to its words: what a table cell is drawn as. */
+export const plainCell = (cell: string): string => cell.replace(/`([^`]*)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\*([^*]+)\*/g, '$1')
+
+/**
+ * The markdown split into prose blocks and the pipe tables between them,
+ * in order. Everything that is not a table stays markdown as written.
+ */
+export function splitTables(markdown: string): (MarkdownBlock | TableBlock)[] {
+  const lines = markdown.split('\n')
+  const blocks: (MarkdownBlock | TableBlock)[] = []
+  let prose: string[] = []
+  let inFence = false
+
+  const flush = () => {
+    const text = prose.join('\n').trim()
+    if (text !== '') blocks.push({ kind: 'markdown', text })
+    prose = []
+  }
+
+  for (let at = 0; at < lines.length; at += 1) {
+    const line = lines[at] ?? ''
+    if (line.trim().startsWith('```')) inFence = !inFence
+    const next = lines[at + 1]
+    if (!inFence && line.trim().startsWith('|') && next !== undefined && isSeparator(next)) {
+      flush()
+      const header = splitRow(line)
+      const rows: string[][] = []
+      at += 2
+      while (at < lines.length && (lines[at] ?? '').trim().startsWith('|')) {
+        rows.push(splitRow(lines[at] ?? ''))
+        at += 1
+      }
+      at -= 1
+      blocks.push({ kind: 'table', header, rows })
+      continue
+    }
+    prose.push(line)
+  }
+  flush()
+
+  return blocks
+}
+
+/** Column widths for a table drawn in `columns` cells with `gap` between columns, shrinking the widest columns first; undefined when it cannot fit. */
+export function tableWidths(table: TableBlock, columns: number, gap: number): number[] | undefined {
+  const count = table.header.length
+  const widths = table.header.map((cell, i) => Math.max([...plainCell(cell)].length, ...table.rows.map(row => [...plainCell(row[i] ?? '')].length), 1))
+  const room = columns - gap * Math.max(0, count - 1)
+  if (count === 0 || room < count * 3) return undefined
+
+  while (widths.reduce((sum, w) => sum + w, 0) > room) {
+    const widest = widths.indexOf(Math.max(...widths))
+    if ((widths[widest] ?? 0) <= 3) return undefined
+    widths[widest] = (widths[widest] ?? 0) - 1
+  }
+
+  return widths
+}
