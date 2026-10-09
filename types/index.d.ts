@@ -67,6 +67,8 @@ export type Job = {
   id: string
   origin: 'option' | 'button' | 'command'
   dialogId?: string
+  sessionId?: string
+  root?: string
   question: string
   stage: Stage
   note: string

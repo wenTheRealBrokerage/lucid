@@ -187,6 +187,13 @@ export function checkNarration(reply: string, sections: readonly Section[], isSt
   return problems.length > 0 ? { isValid: false, problems, repairs } : { isValid: true, sections: narrated, repairs }
 }
 
+export function speechUrlProblem(url: string): string | undefined {
+  if (/["'\\\s]/.test(url)) return 'LUCID_TTS_URL holds a quote, a backslash or a space'
+  if (/^https:\/\/[^/]/i.test(url) || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(url)) return undefined
+
+  return 'LUCID_TTS_URL must be an https address, or http on localhost'
+}
+
 /** The sections long enough to be worth a narration at all. */
 export function longSections(sections: readonly Section[], minChars: number): Section[] {
   return sections.filter(section => plainText(section.markdown).length >= minChars)

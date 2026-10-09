@@ -2,6 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Job } from '../types'
 
+import { writeGuard } from '../hooks/prompts'
+
 import { PANE, PANE_PROPS, explain, world } from './world'
 
 // A build from start to finish through the testing kit, and what a cancel, a
@@ -59,6 +61,35 @@ describe('a build', () => {
     expect(says(seen.processes).map(argv => argv[argv.indexOf('-o') + 1])).toEqual([`${DIR}/${id}/audio/the-race.new.m4a`, `${DIR}/${id}/audio/the-fix.new.m4a`])
     expect(seen.toasts.at(-1)).toContain('explainer ready')
     expect(seen.files.has(`${DIR}/${id}/job.json`)).toBe(true)
+    expect(seen.job()).toMatchObject({ sessionId: 'session-1', root: '/work' })
+    expect(seen.processes.at(-1)).toEqual(['rm', '-rf', `/tmp/lucid-${id}`])
+  })
+
+  test('registers its builder with a guard for the one file it writes, and the narration writer with none', async ($, on) => {
+    const seen = world(on, { files: BUILT })
+    await explain($, 'about which lock')
+    await seen.clock.advance(1)
+    const id = seen.job()?.id ?? ''
+    const builder = seen.registered.find(spec => spec.name === 'explainer')
+    expect(builder?.tools).toEqual(['Write'])
+    expect(builder?.hooks).toEqual(writeGuard(`/tmp/lucid-${id}/explainer.json`))
+    expect(JSON.stringify(builder?.hooks)).toContain(`/tmp/lucid-${id}/explainer[.]json`)
+    expect(seen.registered.find(spec => spec.name === 'narration-writer')?.hooks).toBeUndefined()
+  })
+
+  test('removes its work folder when it fails or is cancelled, and falls back to /tmp when TMPDIR is empty', async ($, on) => {
+    const seen = world(on, { env: { TMPDIR: '' }, rateMs: 500 })
+    await explain($, 'about a')
+    await seen.clock.advance(1)
+    const first = seen.job()?.id ?? ''
+    await explain($, 'cancel')
+    await seen.clock.advance(500)
+    expect(seen.processes).toContainEqual(['rm', '-rf', `/tmp/lucid-${first}`])
+    await explain($, 'about b')
+    await seen.clock.advance(501)
+    const second = seen.job()?.id ?? ''
+    expect(seen.job()?.stage).toBe('failed')
+    expect(seen.processes.at(-1)).toEqual(['rm', '-rf', `/tmp/lucid-${second}`])
   })
 
   test('two starts at once: one builds, the other is told one is already being built', async ($, on) => {
@@ -236,11 +267,101 @@ describe('a rebuilt page', () => {
     await seen.clock.advance(1)
     expect(seen.job()).toMatchObject({ url: 'https://claude.ai/artifact/a1', isUrlStale: true })
     expect((await explain($, 'status')).text).toContain(`| ${DIR}/j1/explainer.html`)
-    expect(seen.processes.at(-1)).toEqual(['open', '-a', 'Google Chrome', `file://${DIR}/j1/explainer.html`])
+    expect(seen.processes.filter(argv => argv[0] === 'open').at(-1)).toEqual(['open', '-a', 'Google Chrome', `file://${DIR}/j1/explainer.html`])
+    expect(seen.processes.at(-1)).toEqual(['rm', '-rf', '/tmp/lucid-j1-page'])
+    expect(seen.registered.find(spec => spec.name === 'explainer-page')?.hooks).toEqual(writeGuard('/tmp/lucid-j1-page/page.html'))
 
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PANE_PROPS })
     expect((await ui.find({ type: 'Link' }))?.text).toContain('older than the local page')
     await ui.unmount()
+  })
+})
+
+describe('the publish dialog', () => {
+  const paged: Job = { ...DONE, file: `${DIR}/j1/explainer.html` }
+  const armed = { store: { settings: { shouldPublish: true } }, answers: { ask: ['Keep it local'] } }
+
+  test('names the explainer, its question and its build time, and says it came from this session', async ($, on) => {
+    const seen = world(on, { ...armed, job: { ...paged, sessionId: 'session-1', root: '/work' } })
+    await explain($, 'publish')
+    await seen.clock.advance(1)
+    expect(seen.asked).toEqual([
+      'Publishing uploads the page of the explainer "Lock choice", built 1970-01-01 00:00 UTC, which answers "Which lock?" and was written from the text of this session, to claude.ai as a private artifact that only you can delete. Publish it?',
+    ])
+    expect(seen.artifacts).toEqual([])
+  })
+
+  test('says where a recalled explainer came from', async ($, on) => {
+    const seen = world(on, { ...armed, job: { ...paged, sessionId: 'session-0', root: '/elsewhere' } })
+    await explain($, 'publish')
+    await seen.clock.advance(1)
+    expect(seen.asked[0]).toContain('written from the text of another session, in /elsewhere,')
+  })
+
+  test('says so when the explainer is from an earlier session in this folder, or from before lucid recorded it', async ($, on) => {
+    const seen = world(on, { ...armed, job: { ...paged, sessionId: 'session-0', root: '/work' } })
+    await explain($, 'publish')
+    await seen.clock.advance(1)
+    expect(seen.asked[0]).toContain('written from the text of an earlier session in this folder,')
+    seen.setJob(paged)
+    await explain($, 'publish')
+    await seen.clock.advance(1)
+    expect(seen.asked[1]).toContain('written from a session lucid did not record,')
+  })
+})
+
+describe('hosted speech', () => {
+  const URL = 'https://speech.example/v1/audio/speech'
+  const env = { LUCID_TTS_URL: URL, LUCID_TTS_API_KEY: 'key-1' }
+  const approved = { settings: { tts: 'hosted', isHostedAllowed: true, hostedUrl: URL } }
+
+  test('is used at the address that was approved', async ($, on) => {
+    const seen = world(on, { job: DONE, files: SCRIPTS, env, store: approved })
+    await explain($, 'revoice')
+    await seen.clock.advance(1)
+    expect(seen.curls).toHaveLength(1)
+    expect(seen.curls[0]).toContain(`url = "${URL}"`)
+    expect(says(seen.processes)).toEqual([])
+  })
+
+  test('is not used at an address that was not the one approved, and the note says so', async ($, on) => {
+    const seen = world(on, { job: DONE, files: SCRIPTS, env: { ...env, LUCID_TTS_URL: 'https://other.example/v1/audio/speech' }, store: approved })
+    await explain($, 'revoice')
+    await seen.clock.advance(1)
+    expect(seen.curls).toEqual([])
+    expect(says(seen.processes)).toHaveLength(1)
+    expect(seen.job()?.note).toContain('hosted speech was not used: LUCID_TTS_URL is not the address you approved')
+  })
+
+  test('is not used at a stored address that would not pass the check today', async ($, on) => {
+    const plain = 'http://speech.example/v1/audio/speech'
+    const seen = world(on, { job: DONE, files: SCRIPTS, env: { ...env, LUCID_TTS_URL: plain }, store: { settings: { tts: 'hosted', isHostedAllowed: true, hostedUrl: plain } } })
+    await explain($, 'revoice')
+    await seen.clock.advance(1)
+    expect(seen.curls).toEqual([])
+    expect(says(seen.processes)).toHaveLength(1)
+  })
+
+  test('is not used on a consent stored before lucid kept the address', async ($, on) => {
+    const seen = world(on, { job: DONE, files: SCRIPTS, env, store: { settings: { tts: 'hosted', isHostedAllowed: true } } })
+    await explain($, 'revoice')
+    await seen.clock.advance(1)
+    expect(seen.curls).toEqual([])
+  })
+
+  test('is refused before asking when the address is not https or could break the request', async ($, on) => {
+    const seen = world(on, { env: { ...env, LUCID_TTS_URL: 'http://speech.example/v1' } })
+    expect((await explain($, 'tts hosted')).text).toBe('speech: unchanged. LUCID_TTS_URL must be an https address, or http on localhost')
+    expect(seen.asked).toEqual([])
+  })
+
+  test('asks naming the address, and a yes is what a later render is checked against', async ($, on) => {
+    const seen = world(on, { job: DONE, files: SCRIPTS, env, answers: { ask: ['Send text to the hosted service'] } })
+    expect((await explain($, 'tts hosted')).text).toContain(`speech: hosted, through ${URL}`)
+    expect(seen.asked[0]).toContain(URL)
+    await explain($, 'revoice')
+    await seen.clock.advance(1)
+    expect(seen.curls).toHaveLength(1)
   })
 })
 

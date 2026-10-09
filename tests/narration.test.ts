@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { CHUNK_LIMIT, checkNarration, chunkScript, extractJson, keepPromised, longSections, namesIn, numbersIn, rawNarration, withoutTables } from '../hooks/narration'
+import { CHUNK_LIMIT, checkNarration, chunkScript, extractJson, keepPromised, longSections, namesIn, numbersIn, rawNarration, speechUrlProblem, withoutTables } from '../hooks/narration'
 import { FIXTURES_TO_NARRATE, NARRATION_FIXTURES, narratorBrief } from '../hooks/prompts'
 
 const SECTIONS = [
@@ -143,6 +143,23 @@ describe('what counts as a number or a name', () => {
     const long = longSections(NARRATION_FIXTURES, 120)
     expect(long.map(section => section.id)).toEqual(['split-change', 'lock-choice'])
     for (const section of long) expect(numbersIn(section.markdown).length).toBeGreaterThan(2)
+  })
+})
+
+describe('the hosted speech address', () => {
+  test('https anywhere and http on this machine are taken', async () => {
+    for (const url of ['https://api.example.com/v1/audio/speech', 'HTTPS://api.example.com', 'http://localhost:8880/v1/audio/speech', 'http://127.0.0.1/v1', 'http://[::1]:9000']) {
+      expect(speechUrlProblem(url)).toBeUndefined()
+    }
+  })
+
+  test('http elsewhere, another scheme, and a quote, backslash or space are refused', async () => {
+    for (const url of ['http://api.example.com/v1', 'http://localhost.evil.example/v1', 'file:///etc/passwd', 'ftp://x', 'https://', '']) {
+      expect(speechUrlProblem(url)).toBe('LUCID_TTS_URL must be an https address, or http on localhost')
+    }
+    for (const url of ['https://a.example/"\nheader = "X: 1', "https://a.example/'x", 'https://a.example/a\\b', 'https://a.example/a b', 'https://a.example/\tx']) {
+      expect(speechUrlProblem(url)).toBe('LUCID_TTS_URL holds a quote, a backslash or a space')
+    }
   })
 })
 

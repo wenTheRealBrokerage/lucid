@@ -33,6 +33,8 @@ export type WorldOptions = {
   exitCode?: (argv: readonly string[]) => number
   /** The size `fs.stat` answers for a path; a spoken clip's when not given. */
   bytes?: (path: string) => number
+  sessionId?: string
+  cwd?: string
 }
 
 export type World = {
@@ -44,6 +46,9 @@ export type World = {
   dialogs: { tool_use_id: string; labels: string[][] }[]
   modelCalls: string[]
   spawns: string[]
+  /** Each agent type as lucid registered it, and each curl config it wrote on stdin. */
+  registered: Record<string, unknown>[]
+  curls: string[]
   fetches: string[]
   processes: string[][]
   artifacts: Record<string, unknown>[]
@@ -82,6 +87,8 @@ export function world(on: On, options: WorldOptions = {}): World {
     dialogs: [],
     modelCalls: [],
     spawns: [],
+    registered: [],
+    curls: [],
     fetches: [],
     processes: [],
     artifacts: [],
@@ -105,10 +112,16 @@ export function world(on: On, options: WorldOptions = {}): World {
   })
 
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: options.sessionId ?? 'session-1' }))
+  on('session.cwd', () => ({ value: options.cwd ?? '/work' }))
   on('session.surfaces', () => ({ value: options.isInteractive === false ? [] : ['terminal'] }))
   on('session.messages', () => ({ value: [] }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
-  on('agent.register', (_$, e) => ({ value: { agent: `lucid:${e.name}` } }))
+  on('agent.register', (_$, e) => {
+    seen.registered.push({ ...e })
+
+    return { value: { agent: `lucid:${e.name}` } }
+  })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.toast', (_$, e) => {
     seen.toasts.push(e.text)
@@ -154,6 +167,7 @@ export function world(on: On, options: WorldOptions = {}): World {
   })
   on('process.run', async (_$, e) => {
     seen.processes.push([...e.argv])
+    if (e.argv[0] === 'curl') seen.curls.push(e.init?.stdin ?? '')
     const ms = options.runMs?.(e.argv) ?? 0
     if (ms > 0) await clock.sleep(ms)
 

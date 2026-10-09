@@ -19,10 +19,10 @@ import {
   tableWidths,
   widthOf,
 } from './explainer'
-import { checkNarration, chunkScript, keepPromised, longSections, rawNarration } from './narration'
+import { checkNarration, chunkScript, keepPromised, longSections, rawNarration, speechUrlProblem } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer, withPolicy } from './page'
-import { CLASSIFIER_SYSTEM, FIXTURES_TO_NARRATE, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief } from './prompts'
+import { CLASSIFIER_SYSTEM, FIXTURES_TO_NARRATE, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief, writeGuard } from './prompts'
 import {
   aliasRoster,
   applyPricing,
@@ -76,6 +76,7 @@ type Settings = {
   tts: TtsEngine
   voice: string
   isHostedAllowed: boolean
+  hostedUrl: string
   /** Role to family overrides, over the config's own mapping. */
   roles: Record<string, string>
   /** The rung of the narration ladder `/explain-models` last found passing. */
@@ -104,6 +105,7 @@ const DEFAULTS: Settings = {
   tts: 'say',
   voice: '',
   isHostedAllowed: false,
+  hostedUrl: '',
   roles: {},
   narrationStep: 0,
   shouldOffer: true,
@@ -180,6 +182,12 @@ async function dataDir($: EngineInterface): Promise<string> {
   const base = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? ''}/.claude`
 
   return `${base}/plugins/data/lucid`
+}
+
+async function workDir($: EngineInterface, name: string): Promise<string> {
+  const base = ((await $.env.get('TMPDIR').catch(() => undefined)) ?? '').replace(/\/+$/, '') || '/tmp'
+
+  return `${base}/${name}`
 }
 
 async function loadFallback($: EngineInterface, table: Config): Promise<Roster> {
@@ -325,9 +333,11 @@ async function runAgent(
     prompt: string
     description: string
     timeoutMs: number
+    writes?: string
   },
 ): Promise<Finished & { model: string }> {
   const system = await $.fs.read(`${$.plugin.root}/prompts/${input.kind}.md`)
+  const guard = input.writes === undefined ? undefined : writeGuard(input.writes)
 
   // The roster's exact id first, then the family's engine alias, then the fallback table's id.
   for (const model of new Set([input.model.id, input.model.family, input.fallbackId])) {
@@ -341,6 +351,7 @@ async function runAgent(
         model,
         effort: input.effort,
         omitClaudeMd: true,
+        ...(guard === undefined ? {} : { hooks: guard }),
       })
       .then(() => $.agent.spawn({ subagentType: `lucid:${input.kind}`, prompt: input.prompt, description: input.description }))
       .catch((err: unknown) => ({ deny: words(err), agentId: undefined, model: undefined }))
@@ -514,7 +525,7 @@ async function keepIfSpoken($: EngineInterface, fresh: string, out: string, scri
 }
 
 /** Renders one section's script to an audio file with the chosen engine; undefined when it cannot. */
-async function renderSpeech($: EngineInterface, settings: Settings, dir: string, script: Narrated): Promise<string | undefined> {
+async function renderSpeech($: EngineInterface, settings: Settings, dir: string, script: Narrated, hostedUrl: string | undefined): Promise<string | undefined> {
   const text = `${dir}/audio/${script.id}.txt`
   await $.fs.write(text, script.chunks.join('\n\n'))
 
@@ -532,14 +543,14 @@ async function renderSpeech($: EngineInterface, settings: Settings, dir: string,
     $.ui.log('Kokoro could not render; using the system voice for this section', { to: 'debug' })
   }
 
-  if (settings.tts === 'hosted' && settings.isHostedAllowed) {
-    const url = await $.env.get('LUCID_TTS_URL')
+  if (settings.tts === 'hosted' && hostedUrl !== undefined) {
+    const url = hostedUrl
     const key = await $.env.get('LUCID_TTS_API_KEY')
     const model = (await $.env.get('LUCID_TTS_MODEL')) ?? ''
     const parts: string[] = []
 
     for (const [index, chunk] of script.chunks.entries()) {
-      if (url === undefined || key === undefined) break
+      if (key === undefined) break
       const body = `${dir}/audio/${script.id}.${index}.json`
       const part = `${dir}/audio/${script.id}.${index}.mp3`
       await $.fs.write(body, JSON.stringify({ model, voice: settings.voice || 'alloy', input: chunk, response_format: 'mp3' }))
@@ -628,6 +639,12 @@ async function writeNarration(
   return { scripts: [], step: -1, model: '', notes, ...(usage ? { usage } : {}) }
 }
 
+async function approvedSpeechUrl($: EngineInterface, settings: Settings): Promise<string | undefined> {
+  const url = await $.env.get('LUCID_TTS_URL').catch(() => undefined)
+
+  return settings.isHostedAllowed && url !== undefined && url === settings.hostedUrl && speechUrlProblem(url) === undefined ? url : undefined
+}
+
 /**
  * Renders the scripts to speech and finishes the job. The last step of a
  * build, and the whole of `/explain revoice`.
@@ -648,6 +665,11 @@ async function voice(
 ): Promise<void> {
   const { id, dir, settings } = input
   const narrated = input.scripts.filter(one => one.narrate)
+  const hostedUrl = settings.tts === 'hosted' ? await approvedSpeechUrl($, settings) : undefined
+  const unapproved =
+    settings.tts === 'hosted' && hostedUrl === undefined && narrated.length > 0
+      ? 'hosted speech was not used: LUCID_TTS_URL is not the address you approved, and /explain tts hosted asks again'
+      : ''
   let sections: Section[] = input.sections.map(section => ({ ...section }))
   let clips = 0
 
@@ -655,7 +677,7 @@ async function voice(
 
   for (const script of narrated) {
     if (!(await input.isWanted())) break
-    const audio = await renderSpeech($, settings, dir, script)
+    const audio = await renderSpeech($, settings, dir, script, hostedUrl)
     if (audio === undefined) continue
     clips += 1
     sections = sections.map(section => (section.id === script.id ? { ...section, audio } : section))
@@ -679,7 +701,7 @@ async function voice(
         : (input.sent ?? 0) > 0
           ? `the narration writer narrated none of the ${input.sent} sections it was given`
           : 'no section was long enough to narrate'
-  const note = input.caveat === '' ? voiced : `${voiced}; ${input.caveat}`
+  const note = [voiced, unapproved, input.caveat].filter(Boolean).join('; ')
 
   await patchJob($, id, { stage: 'done', sections, note, finishedAt: input.finishedAt ?? (await $.clock.now()) })
   await keepJob($, id)
@@ -695,7 +717,7 @@ async function buildPage($: EngineInterface): Promise<void> {
   if (current === null || current.stage !== 'done') return
   const { id, dir } = current
   const title = current.title ?? 'Explainer'
-  const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}-page`
+  const work = await workDir($, `lucid-${id}-page`)
   await patchJob($, id, { stage: 'paging', note: 'a builder is writing the page' })
 
   try {
@@ -722,6 +744,7 @@ async function buildPage($: EngineInterface): Promise<void> {
         prompt: pageBrief({ title, sections: current.sections, dir: work, problems }),
         description: 'Build explainer page',
         timeoutMs: 20 * 60_000,
+        writes: `${work}/page.html`,
       })
 
       const written = await $.fs.read(`${work}/page.html`).catch(() => undefined)
@@ -761,6 +784,8 @@ async function buildPage($: EngineInterface): Promise<void> {
     if (!(await isAt($, id, 'paging'))) return
     await patchJob($, id, { stage: 'done', note: `page not built: ${words(err)}` })
     $.ui.toast(`no page. ${words(err)}`, { timeoutMs: 10_000 })
+  } finally {
+    await $.process.run(['rm', '-rf', work]).catch(() => undefined)
   }
 }
 
@@ -782,8 +807,21 @@ async function publishPage($: EngineInterface): Promise<void> {
   const current = await recallJob($)
   if (current === null || current.file === undefined) return
 
+  const sessionId = await $.session.id().catch(() => undefined)
+  const root = await $.session.cwd().catch(() => undefined)
+  const from =
+    current.sessionId === undefined
+      ? 'a session lucid did not record'
+      : current.sessionId === sessionId
+        ? 'the text of this session'
+        : current.root !== undefined && current.root === root
+          ? 'the text of an earlier session in this folder'
+          : `the text of another session, in ${current.root ?? 'a folder lucid did not record'}`
+  const built = current.finishedAt === undefined ? '' : `, built ${new Date(current.finishedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+  const what = `"${printable(current.title ?? 'Explainer')}"${built}, which answers "${printable(current.question).replace(/\s+/g, ' ').slice(0, 160)}" and was written from ${from}`
+
   const answer = await $.ui
-    .ask('Publishing uploads the page, written from your session text, to claude.ai as a private artifact that only you can delete. Publish it?', {
+    .ask(`Publishing uploads the page of the explainer ${what}, to claude.ai as a private artifact that only you can delete. Publish it?`, {
       header: OWN_HEADER,
       options: ['Publish', 'Keep it local'],
     })
@@ -852,8 +890,9 @@ async function runJob($: EngineInterface, fresh: Job, isDialogOpen: boolean): Pr
     $.ui.toast(`no explainer. ${error}`, { timeoutMs: 10_000 })
   }
 
+  const work = await workDir($, `lucid-${id}`)
+
   try {
-    const work = `${((await $.env.get('TMPDIR')) ?? '/tmp').replace(/\/$/, '')}/lucid-${id}`
     const table = await loadConfig($)
     const settings = await loadSettings($)
     const roles = { ...table.roles, ...settings.roles }
@@ -934,6 +973,7 @@ async function runJob($: EngineInterface, fresh: Job, isDialogOpen: boolean): Pr
         prompt: builderBrief({ question, context, dir: work, problems }),
         description: 'Build explainer',
         timeoutMs: 20 * 60_000,
+        writes: `${work}/explainer.json`,
       })
       builderUsage = addUsage(builderUsage, built.usage)
       await patchJob($, id, { model: built.model, ...(builderUsage ? { builderUsage } : {}) })
@@ -978,6 +1018,8 @@ async function runJob($: EngineInterface, fresh: Job, isDialogOpen: boolean): Pr
     await voice($, { id, dir, scripts, settings, caveat, isWanted, sections: document.sections, sent: long.length })
   } catch (err) {
     await fail(words(err))
+  } finally {
+    await $.process.run(['rm', '-rf', work]).catch(() => undefined)
   }
 }
 
@@ -990,6 +1032,8 @@ async function startJob($: EngineInterface, asked: Asked): Promise<Start> {
 
   const now = await $.clock.now()
   const id = `j${now.toString(36)}`
+  const sessionId = await $.session.id().catch(() => undefined)
+  const root = await $.session.cwd().catch(() => undefined)
   const fresh: Job = {
     id,
     origin: asked.origin,
@@ -1000,6 +1044,8 @@ async function startJob($: EngineInterface, asked: Asked): Promise<Start> {
     startedAt: now,
     sections: [],
     ...(asked.dialogId === undefined ? {} : { dialogId: asked.dialogId }),
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(root === undefined ? {} : { root }),
   }
   let running: Job | null = null
   await update($, job, current => {
@@ -1138,6 +1184,8 @@ async function ttsCommand($: EngineInterface, rest: string[]): Promise<string> {
     if (url === undefined || (await $.env.get('LUCID_TTS_API_KEY')) === undefined) {
       return 'hosted speech needs LUCID_TTS_URL and LUCID_TTS_API_KEY in the environment (and optionally LUCID_TTS_MODEL)'
     }
+    const problem = speechUrlProblem(url)
+    if (problem !== undefined) return `speech: unchanged. ${problem}`
 
     const answer = await $.ui
       .ask(`Hosted speech sends the narration text of every explainer to ${url}, outside this machine. Turn it on?`, {
@@ -1146,7 +1194,7 @@ async function ttsCommand($: EngineInterface, rest: string[]): Promise<string> {
       })
       .catch(() => 'Keep speech local')
     if (answer !== 'Send text to the hosted service') return 'speech: unchanged, still local'
-    await saveSettings($, { tts: 'hosted', isHostedAllowed: true, voice: voice.join(' ') })
+    await saveSettings($, { tts: 'hosted', isHostedAllowed: true, hostedUrl: url, voice: voice.join(' ') })
 
     return `speech: hosted, through ${url}. /explain tts say switches back.`
   }
