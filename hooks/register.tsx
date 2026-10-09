@@ -794,7 +794,7 @@ async function runJob($: EngineInterface, origin: Job['origin'], question: strin
       const pick = resolveTier(tierAt(step, table), roster, roles, table)
       if (!pick.isResolved) return await fail(pick.error)
       const choice = `${pick.model.id} at ${pick.effort} effort`
-      await patchJob($, id, { stage: 'confirming', complexity, step, model: pick.model.id, effort: pick.effort, note: `chose ${choice}` })
+      await patchJob($, id, { stage: 'confirming', complexity, step, model: pick.model.id, effort: pick.effort, note: 'asking before building' })
 
       if (!settings.shouldConfirm || isDialogOpen) {
         $.ui.toast(`building with ${choice} (rated ${complexity})`, { timeoutMs: 8000 })
