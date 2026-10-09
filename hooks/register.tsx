@@ -19,10 +19,10 @@ import {
   tableWidths,
   widthOf,
 } from './explainer'
-import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
+import { checkNarration, chunkScript, keepPromised, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
-import { CLASSIFIER_SYSTEM, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief } from './prompts'
+import { CLASSIFIER_SYSTEM, FIXTURES_TO_NARRATE, NARRATION_FIXTURES, builderBrief, classifierPrompt, narratorBrief, pageBrief } from './prompts'
 import {
   aliasRoster,
   applyPricing,
@@ -579,7 +579,7 @@ async function renderSpeech($: EngineInterface, settings: Settings, dir: string,
 /** Asks the narration ladder, cheapest rung first, for scripts that pass the checks. */
 async function writeNarration(
   $: EngineInterface,
-  input: { sections: readonly Section[]; from: number; isStrict: boolean; roster: Roster; fallback: Roster; roles: Record<string, string> },
+  input: { sections: readonly Section[]; from: number; isStrict: boolean; roster: Roster; fallback: Roster; roles: Record<string, string>; mustNarrate?: readonly string[] },
 ): Promise<{ scripts: Narrated[]; step: number; usage?: Usage; model: string; notes: string[] }> {
   const table = await loadConfig($)
   const notes: string[] = []
@@ -618,7 +618,7 @@ async function writeNarration(
       continue
     }
 
-    const check = checkNarration(done.answer, input.sections, input.isStrict)
+    const check = checkNarration(done.answer, input.sections, input.isStrict, input.mustNarrate)
     if (check.isValid) {
       return { scripts: check.sections, step, model: done.model, notes: [...notes, ...check.repairs], ...(usage ? { usage } : {}) }
     }
@@ -643,6 +643,7 @@ async function voice(
     caveat: string
     isWanted: () => Promise<boolean>
     finishedAt?: number
+    sent?: number
   },
 ): Promise<void> {
   const { id, dir, settings } = input
@@ -675,7 +676,9 @@ async function voice(
       ? `${clips} narrated sections`
       : narrated.length > 0
         ? `the ${settings.tts} speech engine produced no audio here (the macOS system voice cannot speak in some tmux and SSH sessions)${hasEarlier ? '; the earlier clips are kept' : ''}`
-        : 'no section was long enough to narrate'
+        : (input.sent ?? 0) > 0
+          ? `the narration writer narrated none of the ${input.sent} sections it was given`
+          : 'no section was long enough to narrate'
   const note = input.caveat === '' ? voiced : `${voiced}; ${input.caveat}`
 
   await patchJob($, id, { stage: 'done', sections, note, finishedAt: input.finishedAt ?? (await $.clock.now()) })
@@ -968,11 +971,11 @@ async function runJob($: EngineInterface, fresh: Job, isDialogOpen: boolean): Pr
       if (written.usage) await patchJob($, id, { narratorUsage: written.usage })
       if (written.notes.length > 0) $.ui.log(`narration notes: ${written.notes.join(' | ')}`, { to: 'debug' })
       if (written.scripts.length === 0) caveat = 'no narration writer passed its checks, so the narration reads the sections as written'
-      scripts = written.scripts.length > 0 ? written.scripts : rawNarration(long)
+      scripts = keepPromised(written.scripts.length > 0 ? written.scripts : rawNarration(long), long)
       if (!(await isWanted())) return
     }
 
-    await voice($, { id, dir, scripts, settings, caveat, isWanted, sections: document.sections })
+    await voice($, { id, dir, scripts, settings, caveat, isWanted, sections: document.sections, sent: long.length })
   } catch (err) {
     await fail(words(err))
   }
@@ -1062,7 +1065,7 @@ async function reviewModels($: EngineInterface): Promise<void> {
   // One log line each: a transcript notice is a single line.
   for (const line of lines) $.ui.log(line)
 
-  const tried = await writeNarration($, { sections: NARRATION_FIXTURES, from: 0, isStrict: true, roster, fallback, roles })
+  const tried = await writeNarration($, { sections: NARRATION_FIXTURES, from: 0, isStrict: true, roster, fallback, roles, mustNarrate: FIXTURES_TO_NARRATE })
   if (tried.step < 0) {
     $.ui.log(`narration writer: no rung passed the fixtures (${tried.notes.join(' | ') || 'no detail'}); keeping rung ${settings.narrationStep + 1}`)
 

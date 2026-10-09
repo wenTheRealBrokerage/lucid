@@ -168,7 +168,7 @@ Claude models write the narration script. They do not produce audio, so a speech
 - **Kokoro** (opt-in). `/explain tts kokoro` installs `kokoro-js` and a voice model under `<config dir>/plugins/data/lucid/kokoro`: about 500 MB in all, fetched once, then offline. Needs Node and npm.
 - **Hosted** (opt-in). `/explain tts hosted` asks first, because it sends narration text off this machine. It needs `LUCID_TTS_URL` and `LUCID_TTS_API_KEY`, and optionally `LUCID_TTS_MODEL`, and speaks to an OpenAI-style `audio/speech` endpoint. **UNVERIFIED**: never run against a real service.
 
-A section is narrated when it has at least 600 characters of prose and the writer judges it worth hearing, unless its own `narrate` says otherwise. The script must keep every standalone number from the section. If no writer passes, the section is read as written.
+A section is narrated when it has at least 600 characters of prose and the writer judges it worth hearing, unless its own `narrate` says otherwise: `false` silences it, and `true` is narrated even when the writer declines it, from the section's own words. The script must keep every standalone number from the section's prose; numbers in its tables and headings are not required, because the writer is told to leave headings out and to describe a table in a sentence or two. If no writer passes, the section is read as written, without its tables.
 
 Clips are rendered to files, so they survive `/explain revoice` and are embedded by `/explain page`. In the terminal there is no pause: Play starts the clip and Stop ends it. In the page, each narrated section has a Listen button that pauses and resumes.
 

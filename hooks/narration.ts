@@ -1,5 +1,7 @@
 import type { Section } from '../types'
 
+import { splitTables } from './explainer'
+
 // Narration scripts: what the writer returns, repaired into shape, checked
 // against the text it narrates and cut into chunks a speech engine takes.
 
@@ -45,6 +47,17 @@ export function plainText(markdown: string): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+export function withoutTables(markdown: string): string {
+  return splitTables(markdown)
+    .flatMap(block => (block.kind === 'markdown' ? [block.text] : []))
+    .join('\n\n')
+}
+
+const withoutHeadings = (markdown: string): string => markdown.replace(/^ {0,3}#{1,6}\s.*$/gm, '')
+
+const keepsFigure = (script: string, number: string): boolean =>
+  new RegExp(`(?<!\\d|\\d[.,])${number.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d|[.,]\\d)`).test(script)
 
 /**
  * Numbers standing alone in prose: not part of an identifier, a path or a
@@ -106,10 +119,11 @@ const asBoolean = (value: unknown): boolean | undefined => {
 
 /**
  * Brings a writer's reply into `{ sections: [{ id, narrate, script }] }` and
- * checks it: every narrated script keeps the section's standalone numbers
- * word for word (and its names, when `isStrict`).
+ * checks it: every narrated script keeps the standalone numbers of the
+ * section's prose word for word (and its names, when `isStrict`), and every
+ * section in `mustNarrate` is narrated.
  */
-export function checkNarration(reply: string, sections: readonly Section[], isStrict = false): NarrationCheck {
+export function checkNarration(reply: string, sections: readonly Section[], isStrict = false, mustNarrate: readonly string[] = []): NarrationCheck {
   const repairs: string[] = []
   const parsed = extractJson(reply)
 
@@ -147,8 +161,8 @@ export function checkNarration(reply: string, sections: readonly Section[], isSt
     const narrate = (flag ?? script !== '') && script !== ''
 
     if (narrate) {
-      const source = plainText(section.markdown)
-      const missingNumbers = numbersIn(source).filter(number => !script.includes(number))
+      const source = plainText(withoutHeadings(withoutTables(section.markdown)))
+      const missingNumbers = numbersIn(source).filter(number => !keepsFigure(script, number))
       if (missingNumbers.length > 0) problems.push(`"${row.id}" drops or rewrites ${missingNumbers.join(', ')}`)
 
       const said = script.toLowerCase()
@@ -166,6 +180,10 @@ export function checkNarration(reply: string, sections: readonly Section[], isSt
     }
   }
 
+  for (const id of mustNarrate) {
+    if (narrated.some(one => one.id === id && !one.narrate)) problems.push(`"${id}" was not narrated`)
+  }
+
   return problems.length > 0 ? { isValid: false, problems, repairs } : { isValid: true, sections: narrated, repairs }
 }
 
@@ -177,8 +195,18 @@ export function longSections(sections: readonly Section[], minChars: number): Se
 /** The last resort when no writer passes: the section's own words, read as they stand. */
 export function rawNarration(sections: readonly Section[]): Narrated[] {
   return sections.map(section => {
-    const script = plainText(section.markdown)
+    const script = plainText(withoutTables(section.markdown))
 
     return { id: section.id, narrate: script !== '', script, chunks: chunkScript(script) }
+  })
+}
+
+export function keepPromised(scripts: readonly Narrated[], sections: readonly Section[]): Narrated[] {
+  const promised = new Map(sections.flatMap(section => (section.narrate === true ? [[section.id, section] as const] : [])))
+
+  return scripts.map(script => {
+    const section = promised.get(script.id)
+
+    return script.narrate || section === undefined ? script : (rawNarration([section])[0] ?? script)
   })
 }

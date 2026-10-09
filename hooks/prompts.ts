@@ -70,7 +70,7 @@ export function narratorBrief(sections: readonly Section[]): string {
     'Write narration scripts for the sections below. Reply with JSON only:',
     '{"sections": [{"id": "<section id>", "narrate": true or false, "script": "<what to say, or empty>"}]}',
     '',
-    JSON.stringify({ sections: sections.map(({ id, heading, markdown }) => ({ id, heading, markdown })) }, null, 2),
+    JSON.stringify({ sections: sections.map(({ id, heading, markdown, narrate }) => ({ id, heading, markdown, ...(narrate === true ? { mustNarrate: true } : {}) })) }, null, 2),
   ].join('\n')
 }
 
@@ -78,6 +78,8 @@ export function narratorBrief(sections: readonly Section[]): string {
  * Texts a narration writer is tried on by `/explain-models`. Each has numbers
  * and names that must survive word for word, and an identifier to spell out.
  */
+export const FIXTURES_TO_NARRATE: readonly string[] = ['split-change', 'lock-choice']
+
 export const NARRATION_FIXTURES: readonly Section[] = [
   {
     id: 'split-change',
