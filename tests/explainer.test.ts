@@ -34,7 +34,7 @@ describe('checks on a built explainer', () => {
     if (!check.isValid) return
     expect(check.title).toBe('Optimistic locking')
     expect(check.sections.map(section => section.id)).toEqual(['the-race', 'the-fix', 'the-table'])
-    expect(check.sections[0]?.diagram).toEqual(DIAGRAM)
+    expect(check.sections[0]?.diagram).toEqual({ ...DIAGRAM, maxWidth: 26 })
     expect(check.sections[0]?.takeaway).toBe('Lost updates make no noise.')
     expect(check.sections[1]?.steps).toEqual(['read v7', 'work', 'write if still v7'])
     expect(check.sections[1]?.narrate).toBe(true)
@@ -55,21 +55,56 @@ describe('checks on a built explainer', () => {
   })
 
   test('raw HTML in markdown fails, but a tag inside code does not', async () => {
-    expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a <b>bold</b> word' }] })))).toEqual(['section "the-table" has raw HTML in its markdown'])
-    expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a `<b>` tag and\n\n```html\n<div>x</div>\n```' }] })))).toEqual([])
-    expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a List<String> of names' }] })))).toEqual([])
+    const withMarkdown = (markdown: string) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown }] })))
+    expect(withMarkdown('a <b>bold</b> word')).toEqual(['section "the-table" has raw HTML in its markdown: <b>'])
+    expect(withMarkdown('a `<b>` tag and\n\n```html\n<div>x</div>\n```')).toEqual([])
+    expect(withMarkdown('a List<String> of names')).toEqual([])
+    expect(withMarkdown('H<sub>2</sub>O and x<sup>2</sup>')).toEqual(['section "the-table" has raw HTML in its markdown: <sub>'])
+    expect(withMarkdown('an upper-case <TABLE> too')).toEqual(['section "the-table" has raw HTML in its markdown: <TABLE>'])
   })
 
-  test('a diagram needs ascii lines in the allowed charset, no tabs, and every line within maxWidth', async () => {
+  test('generics and component names that happen to spell a tag are not HTML, nor is a tag in any kind of code', async () => {
+    const withMarkdown = (markdown: string) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown }] })))
+    expect(withMarkdown('a List<Object>, a Component<P> and a Map<A, B>')).toEqual([])
+    expect(withMarkdown('render a <Button> inside a <Table>')).toEqual([])
+    expect(withMarkdown('fenced with tildes:\n\n~~~html\n<div>x</div>\n~~~\n\nand four backticks:\n\n````\n<p>y</p>\n````')).toEqual([])
+    expect(withMarkdown('a span with two backticks: ``<b>`` and an unclosed fence:\n\n```\n<i>z</i>')).toEqual([])
+  })
+
+  test('a diagram needs ascii lines in printable ASCII, no tabs, and every line within the limit', async () => {
     const withDiagram = (diagram: unknown) => text(document => ({ ...document, sections: [{ ...document.sections[2], diagram }] }))
-    expect(problemsOf(withDiagram({ ascii: [], maxWidth: 20 }))).toEqual(['section "the-table": diagram.ascii must be a non-empty list of lines'])
-    expect(problemsOf(withDiagram({ ascii: ['a\tb'], maxWidth: 20 }))).toEqual(['section "the-table": diagram.ascii line 1 has a tab'])
-    expect(problemsOf(withDiagram({ ascii: ['┌──┐'], maxWidth: 20 }))[0]).toContain('outside +-|<>^v')
-    expect(problemsOf(withDiagram({ ascii: ['+------+'], maxWidth: 4 }))).toEqual(['section "the-table": diagram.ascii line 1 is wider than maxWidth 4'])
-    expect(problemsOf(withDiagram({ ascii: ['+--+'], maxWidth: DIAGRAM_MAX_WIDTH + 1 }))[0]).toContain(`from 1 to ${DIAGRAM_MAX_WIDTH}`)
-    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌\t┐'], maxWidth: 10 }))).toEqual(['section "the-table": diagram.unicode line 1 has a tab'])
-    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌──────────────┐'], maxWidth: 10 }))).toEqual(['section "the-table": diagram.unicode line 1 is wider than maxWidth 10'])
-    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌──┐'], maxWidth: 10 }))).toEqual([])
+    expect(problemsOf(withDiagram({ ascii: [] }))).toEqual(['section "the-table": diagram.ascii must be a non-empty list of lines'])
+    expect(problemsOf(withDiagram({ ascii: ['a\tb'] }))).toEqual(['section "the-table": diagram.ascii line 1 has a tab'])
+    expect(problemsOf(withDiagram({ ascii: ['┌──┐'] }))).toEqual(['section "the-table": diagram.ascii line 1 has "┌" (U+250C); ascii takes printable ASCII only'])
+    expect(problemsOf(withDiagram({ ascii: ['caf\u00e9 -> bar'] }))).toEqual(['section "the-table": diagram.ascii line 1 has "\u00e9" (U+00E9); ascii takes printable ASCII only'])
+    expect(problemsOf(withDiagram({ ascii: ['-'.repeat(DIAGRAM_MAX_WIDTH + 1)] }))).toEqual([
+      `section "the-table": diagram.ascii line 1 is ${DIAGRAM_MAX_WIDTH + 1} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`,
+    ])
+    expect(problemsOf(withDiagram({ ascii: ['-'.repeat(DIAGRAM_MAX_WIDTH)] }))).toEqual([])
+    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌\t┐'] }))).toEqual(['section "the-table": diagram.unicode line 1 has a tab'])
+    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['─'.repeat(DIAGRAM_MAX_WIDTH + 1)] }))).toEqual([
+      `section "the-table": diagram.unicode line 1 is ${DIAGRAM_MAX_WIDTH + 1} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`,
+    ])
+    expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌──┐'] }))).toEqual([])
+  })
+
+  test('a diagram is judged against the limit, not against a width the builder declares, and keeps the width measured', async () => {
+    const withDiagram = (diagram: unknown) => checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram }] })))
+    for (const maxWidth of [4, DIAGRAM_MAX_WIDTH + 1, 'wide', undefined]) {
+      const check = withDiagram({ ascii: ['+------+'], unicode: ['┌────────┐'], maxWidth })
+      expect(check.isValid).toBe(true)
+      if (!check.isValid) return
+      expect(check.sections[0]?.diagram?.maxWidth).toBe(10)
+    }
+  })
+
+  test('an optional field written as null is read as left out', async () => {
+    const check = checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram: null, steps: null, narrate: null, takeaway: null }] })))
+    expect(check.isValid).toBe(true)
+    if (!check.isValid) return
+    expect(check.sections[0]).toEqual({ id: 'the-table', heading: 'Side by side', markdown: DOCUMENT.sections[2]?.markdown })
+    const twin = checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], narrate: undefined, diagram: { ascii: ['+--+'], unicode: null } }] })))
+    expect(twin.isValid && twin.sections[0]?.diagram).toEqual({ ascii: ['+--+'], maxWidth: 4 })
   })
 
   test('steps, narrate and takeaway are checked when present', async () => {
@@ -80,11 +115,18 @@ describe('checks on a built explainer', () => {
     expect(problemsOf(withField({ narrate: 'yes' }))).toEqual(['section "the-table": narrate must be true or false'])
     expect(problemsOf(withField({ takeaway: '' }))).toEqual(['section "the-table": takeaway must be a sentence'])
     expect(problemsOf(withField({ takeaway: 'x'.repeat(300) }))[0]).toContain('takeaway is longer than')
+    expect(problemsOf(withField({ takeaway: 'a\u0008b' }))).toEqual(['section "the-table": takeaway has a control character other than tab or newline'])
+    expect(problemsOf(withField({ takeaway: 'a tab\tand a\nline break' }))).toEqual([])
   })
 
   test('control characters other than tab and newline fail, and so does a document over the size bound', async () => {
     expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a\u0007b' }] })))).toEqual(['section "the-table" has a control character other than tab or newline'])
     expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'tab\there\nand a line' }] })))).toEqual([])
+    for (const c1 of ['\u007f', '\u0085', '\u009b', '\u009f']) {
+      expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: `a${c1}b` }] })))).toEqual(['section "the-table" has a control character other than tab or newline'])
+      expect(problemsOf(text(document => ({ ...document, title: `a${c1}b` })))).toEqual(['the title has a line break or a control character'])
+    }
+    expect(problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'a\u00a0b' }] })))).toEqual([])
     const huge = text(document => ({ ...document, sections: [{ ...document.sections[2], markdown: 'x'.repeat(EXPLAINER_LIMIT_CHARS) }] }))
     expect(problemsOf(huge)[0]).toContain(`the limit is ${EXPLAINER_LIMIT_CHARS}`)
   })

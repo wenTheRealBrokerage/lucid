@@ -180,6 +180,15 @@ describe('the explainer pane', () => {
     }
   })
 
+  test('a failed job whose note quotes a control character still draws', async ($, on) => {
+    mock.store(on)
+    mock.env(on, {})
+    seedJob(on, { ...kept(), stage: 'failed', sections: [], note: 'the explainer failed its checks: section id "a\u0008b" is not kebab-case' })
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal', props: PROPS })
+    expect(await textOf(ui)).toContain('section id "a b" is not kebab-case')
+    await ui.unmount()
+  })
+
   test('without a job the pane says so', async ($, on) => {
     mock.store(on)
     mock.env(on, {})

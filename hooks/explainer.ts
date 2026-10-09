@@ -14,9 +14,13 @@ export const STEPS_MAX = 24
 const ASCII_LINE = /^[A-Za-z0-9 +\-|<>^v.,:;()'"_=*#/\\[\]{}!?%&@~`$]*$/
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/
 /** Control characters other than tab and newline: the engine draws none of them (D:5709). */
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
 const HTML_TAG =
   /<\/?(a|abbr|article|aside|audio|b|blockquote|br|button|canvas|code|details|div|em|embed|figure|footer|form|h[1-6]|header|hr|i|iframe|img|input|kbd|li|main|mark|nav|object|ol|p|pre|script|section|small|span|strong|style|sub|summary|sup|svg|table|tbody|td|th|thead|tr|u|ul|video)(\s[^<>]*)?\/?>/i
+
+export const printable = (text: string): string => text.replace(new RegExp(CONTROL.source, 'g'), ' ')
+
+const codePoint = (char: string): string => `U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`
 
 export type ExplainerCheck =
   | { isValid: true; title: string; sections: Section[] }
@@ -25,7 +29,20 @@ export type ExplainerCheck =
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every(one => typeof one === 'string')
 
 /** The markdown with its code taken out: where an HTML tag would be drawn as a tag. */
-const outsideCode = (markdown: string): string => markdown.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
+const outsideCode = (markdown: string): string =>
+  markdown
+    .replace(/(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?(\n[ \t]*\2[^\n]*|$)/g, '$1')
+    .replace(/(`{2,})[\s\S]*?\1/g, '')
+    .replace(/`[^`\n]*`/g, '')
+
+const rawTag = (markdown: string): string | undefined => {
+  for (const match of outsideCode(markdown).matchAll(new RegExp(HTML_TAG.source, 'gi'))) {
+    const name = match[1] ?? ''
+    if (name === name.toLowerCase() || (name.length > 1 && name === name.toUpperCase())) return match[0]
+  }
+
+  return undefined
+}
 
 function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram | undefined {
   if (typeof raw !== 'object' || raw === null) {
@@ -35,10 +52,6 @@ function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram 
   }
 
   const one = raw as Partial<Record<keyof Diagram, unknown>>
-  const maxWidth = typeof one.maxWidth === 'number' && Number.isInteger(one.maxWidth) ? one.maxWidth : undefined
-  if (maxWidth === undefined || maxWidth < 1 || maxWidth > DIAGRAM_MAX_WIDTH) {
-    problems.push(`${where}: diagram.maxWidth must be a whole number from 1 to ${DIAGRAM_MAX_WIDTH}`)
-  }
 
   if (!isStringList(one.ascii) || one.ascii.length === 0) {
     problems.push(`${where}: diagram.ascii must be a non-empty list of lines`)
@@ -47,13 +60,14 @@ function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram 
   }
 
   for (const [row, line] of one.ascii.entries()) {
+    const odd = [...line].find(char => !ASCII_LINE.test(char))
     if (line.includes('\t')) problems.push(`${where}: diagram.ascii line ${row + 1} has a tab`)
-    else if (!ASCII_LINE.test(line)) problems.push(`${where}: diagram.ascii line ${row + 1} uses characters outside +-|<>^v, letters, digits and punctuation`)
-    if (maxWidth !== undefined && line.length > maxWidth) problems.push(`${where}: diagram.ascii line ${row + 1} is wider than maxWidth ${maxWidth}`)
+    else if (odd !== undefined) problems.push(`${where}: diagram.ascii line ${row + 1} has "${printable(odd)}" (${codePoint(odd)}); ascii takes printable ASCII only`)
+    if (line.length > DIAGRAM_MAX_WIDTH) problems.push(`${where}: diagram.ascii line ${row + 1} is ${line.length} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`)
   }
 
   let unicode: string[] | undefined
-  if (one.unicode !== undefined) {
+  if (one.unicode != null) {
     if (!isStringList(one.unicode) || one.unicode.length === 0) {
       problems.push(`${where}: diagram.unicode, when given, must be a non-empty list of lines`)
     } else {
@@ -61,12 +75,12 @@ function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram 
       for (const [row, line] of unicode.entries()) {
         if (line.includes('\t')) problems.push(`${where}: diagram.unicode line ${row + 1} has a tab`)
         if (CONTROL.test(line)) problems.push(`${where}: diagram.unicode line ${row + 1} has a control character`)
-        if (maxWidth !== undefined && [...line].length > maxWidth) problems.push(`${where}: diagram.unicode line ${row + 1} is wider than maxWidth ${maxWidth}`)
+        if ([...line].length > DIAGRAM_MAX_WIDTH) problems.push(`${where}: diagram.unicode line ${row + 1} is ${[...line].length} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`)
       }
     }
   }
 
-  return { ascii: one.ascii, maxWidth: maxWidth ?? DIAGRAM_MAX_WIDTH, ...(unicode === undefined ? {} : { unicode }) }
+  return { ascii: one.ascii, maxWidth: widthOf([...one.ascii, ...(unicode ?? [])]), ...(unicode === undefined ? {} : { unicode }) }
 }
 
 /**
@@ -113,16 +127,17 @@ export function checkExplainer(text: string): ExplainerCheck {
     if (one.heading.trim() === '') problems.push(`${where} has an empty heading`)
     if (one.markdown.trim() === '') problems.push(`${where} has empty markdown`)
     if (CONTROL.test(one.markdown) || CONTROL.test(one.heading)) problems.push(`${where} has a control character other than tab or newline`)
-    if (HTML_TAG.test(outsideCode(one.markdown))) problems.push(`${where} has raw HTML in its markdown`)
+    const tag = rawTag(one.markdown)
+    if (tag !== undefined) problems.push(`${where} has raw HTML in its markdown: ${tag}`)
 
     const section: Section = { id: one.id, heading: one.heading.trim(), markdown: one.markdown }
 
-    if (one.diagram !== undefined) {
+    if (one.diagram != null) {
       const diagram = checkDiagram(one.diagram, where, problems)
       if (diagram !== undefined) section.diagram = diagram
     }
 
-    if (one.steps !== undefined) {
+    if (one.steps != null) {
       if (!isStringList(one.steps) || one.steps.length === 0 || one.steps.some(step => step.trim() === '')) {
         problems.push(`${where}: steps must be a non-empty list of non-empty lines`)
       } else if (one.steps.length > STEPS_MAX) {
@@ -133,14 +148,15 @@ export function checkExplainer(text: string): ExplainerCheck {
       }
     }
 
-    if (one.narrate !== undefined) {
+    if (one.narrate != null) {
       if (typeof one.narrate !== 'boolean') problems.push(`${where}: narrate must be true or false`)
       else section.narrate = one.narrate
     }
 
-    if (one.takeaway !== undefined) {
+    if (one.takeaway != null) {
       if (typeof one.takeaway !== 'string' || one.takeaway.trim() === '') problems.push(`${where}: takeaway must be a sentence`)
       else if (one.takeaway.length > TAKEAWAY_MAX_CHARS) problems.push(`${where}: takeaway is longer than ${TAKEAWAY_MAX_CHARS} characters`)
+      else if (CONTROL.test(one.takeaway)) problems.push(`${where}: takeaway has a control character other than tab or newline`)
       else section.takeaway = one.takeaway.trim()
     }
 

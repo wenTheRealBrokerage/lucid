@@ -87,15 +87,16 @@ The builder writes one file, `explainer.json`, which lucid checks before it narr
 ```
 {"title": "<short name>",
  "sections": [{"id": "kebab-case-id", "heading": "...", "markdown": "...",
-   "diagram": {"ascii": ["..."], "unicode": ["..."], "maxWidth": 60},
+   "diagram": {"ascii": ["..."], "unicode": ["..."]},
    "steps": ["..."], "narrate": true, "takeaway": "..."}]}
 ```
 
 - `markdown`: prose, lists, tables and fenced code; no raw HTML. Tab and newline are the only control characters the engine draws.
-- `diagram`: optional. `ascii` is required and uses `+ - | < > ^ v`, letters, digits and punctuation; `unicode` is an optional box-drawing twin; no tabs in either; every line at most `maxWidth`, which is at most 60. A docked pane at 80 columns has 63 body columns, and the diagram card takes four of them.
+- `diagram`: optional. `ascii` is required and is printable ASCII only (`+ - | < > ^ v`, unaccented letters, digits and ASCII punctuation); `unicode` is an optional box-drawing twin; no tabs in either; every line at most 60 characters wide. lucid measures the width itself and ignores a `maxWidth` the builder writes. A docked pane at 80 columns has 63 body columns, and the diagram card takes four of them.
 - `steps`: optional frames, at most 24, revealed one at a time.
 - `narrate`: optional. By default sections of 600 characters or more are narrated; `true` or `false` overrides that for one section.
-- `takeaway`: optional, one sentence, set apart under the section.
+- `takeaway`: optional, one sentence of at most 240 characters, set apart under the section.
+- An optional field written as `null` is read as left out.
 - The whole file stays under 90,000 characters, below the 100,000 the engine draws in one tree.
 
 Diagrams are drawn with the `Code` element and `truncate-end`, so a diagram wider than the pane is cut at the edge with a hint, never wrapped into a torn drawing.

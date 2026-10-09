@@ -24,7 +24,8 @@ export type Pending = {
 
 /**
  * A diagram the pane draws as a code block: `ascii` always, `unicode` (box
- * drawing) where the terminal is known to draw it. Every line fits `maxWidth`.
+ * drawing) where the terminal is known to draw it. `maxWidth` is the widest line,
+ * as the check measured it.
  */
 export type Diagram = {
   ascii: string[]

@@ -3,7 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Complexity, Effort, Job, Pending, Section, Stage, Usage, View } from '../types'
 
-import { checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, sectionText, splitTables, tableWidths, widthOf } from './explainer'
+import { checkExplainer, isKeptJob, narratedSections, nextNarrated, pickDiagram, plainCell, printable, sectionText, splitTables, tableWidths, widthOf } from './explainer'
 import { checkNarration, chunkScript, longSections, rawNarration } from './narration'
 import type { Narrated } from './narration'
 import { OWN_HEADER, addOffer, checkPage, describeQuestions, isOwnDialog, wantsExplainer } from './page'
@@ -1464,7 +1464,7 @@ export const register: Register = on => {
         {current.stage === 'failed' || current.stage === 'cancelled' ? (
           <Text>
             <Text color={current.stage === 'failed' ? 'error' : 'warning'}>{current.stage === 'failed' ? '✗ ' : '■ '}</Text>
-            <Text>{current.note}</Text>
+            <Text>{printable(current.note)}</Text>
           </Text>
         ) : (
           <Box flexDirection="column">
@@ -1482,7 +1482,7 @@ export const register: Register = on => {
               ))}
             </Box>
             <Text dimColor>
-              {current.note}
+              {printable(current.note)}
               {current.model === undefined ? '' : ` · ${current.model}, ${current.effort ?? '?'} effort, rated ${current.complexity ?? '?'}`}
             </Text>
           </Box>
