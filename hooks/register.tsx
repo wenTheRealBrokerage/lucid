@@ -673,6 +673,7 @@ async function voice(
   let sections: Section[] = input.sections.map(section => ({ ...section }))
   let clips = 0
 
+  if (unapproved !== '') $.ui.toast(unapproved, { timeoutMs: 10_000 })
   if (narrated.length > 0) await patchJob($, id, { stage: 'voicing', note: `rendering speech for ${narrated.length} sections with ${settings.tts}` })
 
   for (const script of narrated) {

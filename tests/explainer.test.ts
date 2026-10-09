@@ -51,7 +51,7 @@ describe('checks on a built explainer', () => {
     if (!check.isValid) return
     expect(check.title).toBe('Optimistic locking')
     expect(check.sections.map(section => section.id)).toEqual(['the-race', 'the-fix', 'the-table'])
-    expect(check.sections[0]?.diagram).toEqual({ ...DIAGRAM, maxWidth: 26 })
+    expect(check.sections[0]?.diagram).toEqual({ ascii: DIAGRAM.ascii, unicode: DIAGRAM.unicode })
     expect(check.sections[0]?.takeaway).toBe('Lost updates make no noise.')
     expect(check.sections[1]?.steps).toEqual(['read v7', 'work', 'write if still v7'])
     expect(check.sections[1]?.narrate).toBe(true)
@@ -128,30 +128,35 @@ describe('checks on a built explainer', () => {
     expect(problemsOf(withDiagram({ ascii: ['+--+'], unicode: ['┌──┐'] }))).toEqual([])
   })
 
-  test('the box-drawing twin takes printable ASCII, box drawing and the four arrows, and nothing wider', async () => {
+  test('the box-drawing twin takes any character one cell wide, and none whose width terminals disagree on', async () => {
     const withTwin = (line: string) => problemsOf(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram: { ascii: ['+--+'], unicode: [line] } }] })))
-    expect(withTwin('┌─┐ a ──> b ← ↑ → ↓ ┼')).toEqual([])
-    expect(withTwin('┌\u{1f642}┐')).toEqual(['section "the-table": diagram.unicode line 1 has "\u{1f642}" (U+1F642); unicode takes printable ASCII, box drawing and the arrows ← ↑ → ↓ only'])
-    expect(withTwin('a ▶ b')[0]).toContain('(U+25B6)')
+    for (const line of ['┌─┐ a ──> b ← ↑ → ↓ ┼', 'a ▶ b ◀ c ▲ ▼ ● ○ • ·', '█▓▒░ ▏▎▍ ⇒ ⟶ ✓ ✗', 'caf\u00e9 α β ≤ ≥ ≠ × ÷']) expect(withTwin(line)).toEqual([])
+    expect(withTwin('┌\u{1f642}┐')).toEqual([
+      'section "the-table": diagram.unicode line 1 has "\u{1f642}" (U+1F642), which is not one cell wide in every terminal; unicode takes single-cell characters only, so no emoji and no CJK',
+    ])
     expect(withTwin('日本')[0]).toContain('(U+65E5)')
+    expect(withTwin('ｆｕｌｌ')[0]).toContain('(U+FF46)')
+    expect(withTwin('ok ✅')[0]).toContain('(U+2705)')
+    expect(withTwin('sun ☀\ufe0f')[0]).toContain('(U+2600)')
+    expect(withTwin('a\u200db')[0]).toContain('(U+200D)')
+    expect(withTwin('e\u0301')[0]).toContain('(U+0301)')
     expect(withTwin('a\u0007b')[0]).toContain('(U+0007)')
   })
 
   test('the limit is the measured body less the card inset', async () => {
     expect(CARD_INSET).toBe(6)
     expect(DIAGRAM_MAX_WIDTH).toBe(57)
-    const widest = { ascii: ['-'.repeat(DIAGRAM_MAX_WIDTH)], maxWidth: DIAGRAM_MAX_WIDTH }
-    expect(pickDiagram(widest, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(false)
-    expect(pickDiagram({ ascii: ['-'.repeat(58)], maxWidth: 58 }, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(true)
+    expect(pickDiagram({ ascii: ['-'.repeat(DIAGRAM_MAX_WIDTH)] }, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(false)
+    expect(pickDiagram({ ascii: ['-'.repeat(58)] }, { unicodeSafe: false, columns: 63 - CARD_INSET }).isCut).toBe(true)
   })
 
-  test('a diagram is judged against the limit, not against a width the builder declares, and keeps the width measured', async () => {
+  test('a diagram is judged against the limit, not against a width the builder declares, which is dropped', async () => {
     const withDiagram = (diagram: unknown) => checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], diagram }] })))
     for (const maxWidth of [4, DIAGRAM_MAX_WIDTH + 1, 'wide', undefined]) {
       const check = withDiagram({ ascii: ['+------+'], unicode: ['┌────────┐'], maxWidth })
       expect(check.isValid).toBe(true)
       if (!check.isValid) return
-      expect(check.sections[0]?.diagram?.maxWidth).toBe(10)
+      expect(check.sections[0]?.diagram).toEqual({ ascii: ['+------+'], unicode: ['┌────────┐'] })
     }
   })
 
@@ -161,7 +166,7 @@ describe('checks on a built explainer', () => {
     if (!check.isValid) return
     expect(check.sections[0]).toEqual({ id: 'the-table', heading: 'Side by side', markdown: DOCUMENT.sections[2]?.markdown })
     const twin = checkExplainer(text(document => ({ ...document, sections: [{ ...document.sections[2], narrate: undefined, diagram: { ascii: ['+--+'], unicode: null } }] })))
-    expect(twin.isValid && twin.sections[0]?.diagram).toEqual({ ascii: ['+--+'], maxWidth: 4 })
+    expect(twin.isValid && twin.sections[0]?.diagram).toEqual({ ascii: ['+--+'] })
   })
 
   test('steps, narrate and takeaway are checked when present', async () => {

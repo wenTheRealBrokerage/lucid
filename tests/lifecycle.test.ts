@@ -331,6 +331,7 @@ describe('hosted speech', () => {
     expect(seen.curls).toEqual([])
     expect(says(seen.processes)).toHaveLength(1)
     expect(seen.job()?.note).toContain('hosted speech was not used: LUCID_TTS_URL is not the address you approved')
+    expect(seen.toasts).toContain('hosted speech was not used: LUCID_TTS_URL is not the address you approved, and /explain tts hosted asks again')
   })
 
   test('is not used at a stored address that would not pass the check today', async ($, on) => {

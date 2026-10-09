@@ -32,7 +32,7 @@ const DONE: Job = {
       id: 'the-race',
       heading: 'The race',
       markdown: 'Two writers read the same row.',
-      diagram: { ascii: ['+---+', '| a |', '+---+'], unicode: ['┌───┐', '│ a │', '└───┘'], maxWidth: 5 },
+      diagram: { ascii: ['+---+', '| a |', '+---+'], unicode: ['┌───┐', '│ a │', '└───┘'] },
       takeaway: 'Lost updates make no noise.',
       audio: '/data/jobs/j1/audio/the-race.m4a',
     },
@@ -182,7 +182,7 @@ describe('the explainer pane', () => {
   })
 
   const withSections = (sections: Section[], change: Partial<Job> = {}): Job => ({ ...kept(), sections, ...change })
-  const wide = (columns: number): Section => ({ id: 'wide', heading: 'Wide', markdown: 'A drawing.', diagram: { ascii: ['-'.repeat(columns)], maxWidth: columns } })
+  const wide = (columns: number): Section => ({ id: 'wide', heading: 'Wide', markdown: 'A drawing.', diagram: { ascii: ['-'.repeat(columns)] } })
 
   test('a diagram is cut from the width the card really leaves, six columns less than the body', async ($, on) => {
     mock.store(on)

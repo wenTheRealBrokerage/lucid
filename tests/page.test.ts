@@ -131,6 +131,15 @@ describe('checks on the opt-in page', () => {
     for (const call of ['new XMLHttpRequest()', 'new WebSocket("wss://x")', 'new EventSource("/x")', 'navigator.sendBeacon("/x")']) {
       expect(problemsOf(PAGE.replace('document.title', call))).toEqual(['the page makes a network call from script'])
     }
+    for (const call of ['new RTCPeerConnection({ iceServers: [] })', 'link.rel = "dns-prefetch"']) {
+      expect(problemsOf(PAGE.replace('document.title', call))).toEqual(['the page makes a network call from script'])
+    }
+    for (const leave of ['window.open("https://example.com/?" + data)', 'location.href = "https://example.com/?" + data', 'location = url', 'document.location="//example.com"', 'window.location.assign(url)', 'location.replace(url)']) {
+      expect(problemsOf(PAGE.replace('document.title', leave))).toEqual(['the page sends the reader to another address from script'])
+    }
+    for (const stay of ['location.hash = "#the-options"', 'if (location == other || location.href === other) done()', 'const reopen = () => panel.open()']) {
+      expect(problemsOf(PAGE.replace('document.title', stay))).toEqual([])
+    }
     for (const tag of ['video', 'source']) expect(problemsOf(`${PAGE}\n<${tag} src="https://example.com/a.mp4">`)).toEqual(['media from another host: https://example.com/a.mp4'])
     expect(problemsOf(PAGE.replace(':root[data-theme="dark"]{--bg:#111}', '').replace(':not([data-theme="light"])', ''))).toEqual(['the page does not style both themes'])
     expect(problemsOf(PAGE.replace('@media (prefers-color-scheme: dark)', '@media (min-width: 1px)'))).toEqual(['the page does not style both themes'])
@@ -139,9 +148,10 @@ describe('checks on the opt-in page', () => {
 
   test('the policy lucid writes ahead of a page closes it to every host but the listed ones', async () => {
     const written = withPolicy(PAGE)
-    const [first = ''] = written.split('\n')
-    expect(written.slice(first.length + 1)).toBe(PAGE)
+    const [first = '', second = ''] = written.split('\n')
+    expect(written.slice(first.length + second.length + 2)).toBe(PAGE)
     expect(first.startsWith('<meta http-equiv="Content-Security-Policy" content="')).toBe(true)
+    expect(second).toBe('<meta http-equiv="x-dns-prefetch-control" content="off">')
     for (const directive of [
       "default-src 'none'",
       "script-src 'unsafe-inline' https://cdnjs.cloudflare.com/ https://cdn.jsdelivr.net/npm/ https://unpkg.com/ https://cdn.tailwindcss.com/ https://code.jquery.com/",
@@ -152,6 +162,7 @@ describe('checks on the opt-in page', () => {
       "connect-src 'none'",
       "form-action 'none'",
       "base-uri 'none'",
+      "webrtc 'block'",
     ]) {
       expect(first).toContain(directive)
     }

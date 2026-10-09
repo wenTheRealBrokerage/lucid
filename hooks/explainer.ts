@@ -4,7 +4,7 @@ import type { Diagram, Job, Section } from '../types'
 // it must pass, and the pure helpers the pane reads it with.
 
 export const CARD_INSET = 6
-/** Widest diagram line allowed: the one body width measured so far (63 columns, in Warp at 80) less the section's padding and the card's border and padding. */
+/** Widest diagram line allowed: the narrowest body measured at 80 columns (63, in Warp) less the section's padding and the card's border and padding. */
 export const DIAGRAM_MAX_WIDTH = 63 - CARD_INSET
 /** The whole document, as JSON: well under the 100,000 characters one drawing holds. */
 export const EXPLAINER_LIMIT_CHARS = 90_000
@@ -13,7 +13,6 @@ export const TAKEAWAY_MAX_CHARS = 240
 export const STEPS_MAX = 24
 
 const ASCII_LINE = /^[A-Za-z0-9 +\-|<>^v.,:;()'"_=*#/\\[\]{}!?%&@~`$]*$/
-const UNICODE_LINE = /^[\u0020-\u007e\u2500-\u257f\u2190-\u2193]*$/
 
 const WIDE_RANGES: Readonly<Record<string, readonly [number, number]>> = {
   hangulJamo: [0x1100, 0x115f],
@@ -131,17 +130,18 @@ function checkDiagram(raw: unknown, where: string, problems: string[]): Diagram 
     } else {
       unicode = one.unicode
       for (const [row, line] of unicode.entries()) {
-        const odd = [...line].find(char => !UNICODE_LINE.test(char))
+        const chars = [...line]
+        const odd = chars.find((char, at) => CONTROL.test(char) || displayWidth(char) !== 1 || chars[at + 1] === EMOJI_PRESENTATION)
         if (line.includes('\t')) problems.push(`${where}: diagram.unicode line ${row + 1} has a tab`)
         else if (odd !== undefined) {
-          problems.push(`${where}: diagram.unicode line ${row + 1} has "${printable(odd)}" (${codePoint(odd)}); unicode takes printable ASCII, box drawing and the arrows ← ↑ → ↓ only`)
+          problems.push(`${where}: diagram.unicode line ${row + 1} has "${printable(odd)}" (${codePoint(odd)}), which is not one cell wide in every terminal; unicode takes single-cell characters only, so no emoji and no CJK`)
         }
         if (displayWidth(line) > DIAGRAM_MAX_WIDTH) problems.push(`${where}: diagram.unicode line ${row + 1} is ${displayWidth(line)} columns wide; the limit is ${DIAGRAM_MAX_WIDTH}`)
       }
     }
   }
 
-  return { ascii: one.ascii, maxWidth: widthOf([...one.ascii, ...(unicode ?? [])]), ...(unicode === undefined ? {} : { unicode }) }
+  return { ascii: one.ascii, ...(unicode === undefined ? {} : { unicode }) }
 }
 
 /**

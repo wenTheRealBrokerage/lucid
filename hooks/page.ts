@@ -27,9 +27,11 @@ const PAGE_POLICY = [
   "connect-src 'none'",
   "form-action 'none'",
   "base-uri 'none'",
+  "webrtc 'block'",
 ].join('; ')
 
-export const withPolicy = (html: string): string => `<meta http-equiv="Content-Security-Policy" content="${PAGE_POLICY}">\n${html}`
+export const withPolicy = (html: string): string =>
+  [`<meta http-equiv="Content-Security-Policy" content="${PAGE_POLICY}">`, '<meta http-equiv="x-dns-prefetch-control" content="off">', html].join('\n')
 
 export type PageCheck = { isValid: true; title: string } | { isValid: false; problems: string[] }
 
@@ -102,7 +104,8 @@ export function checkPage(html: string, sections: readonly Section[]): PageCheck
   const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(match => match[1] ?? '').join('\n')
 
   if (/<!doctype|<html[\s>]|<head[\s>]|<body[\s>]/i.test(html)) problems.push('the page wraps itself in doctype, html, head or body tags')
-  if (/\bfetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(|sendBeacon/.test(scripts)) problems.push('the page makes a network call from script')
+  if (/\bfetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(|sendBeacon|RTCPeerConnection|dns-prefetch/.test(scripts)) problems.push('the page makes a network call from script')
+  if (/\bwindow\.open\s*\(|\blocation\s*(\.\s*href\s*)?=(?!=)|\blocation\s*\.\s*(assign|replace)\s*\(/.test(scripts)) problems.push('the page sends the reader to another address from script')
   if (/<(iframe|object|embed)\b/i.test(html)) problems.push('the page embeds another document')
   if (/<meta\b[^>]*http-equiv\s*=\s*["']?refresh/i.test(html)) problems.push('the page redirects itself with a meta refresh')
   if (/<audio\b/i.test(html) || /new Audio\(|speechSynthesis/.test(scripts)) problems.push('the page has audio code of its own; lucid adds the players')
